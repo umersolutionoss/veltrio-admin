@@ -365,3 +365,21 @@ table.bal .neg { color: var(--bad); }
 @media (max-width: 560px) { .hol-add { grid-template-columns: 1fr; } .hol-add .btn { justify-self: start; } }
 
 [hidden] { display: none !important; }
+
+/* =============== Part 7.6: payroll =============== */
+.month-pick input { padding: 9px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; font-weight: 600; }
+.period-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+.period-bar b { font-size: 18px; }
+.stats.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+table.pay th.r, table.pay td.r, table.slip td.r { text-align: right; }
+table.pay tfoot td { border-top: 2px solid var(--line); padding: 12px; }
+.panel.flush table.pay tfoot td:first-child { padding-left: 22px; }
+.form-bar.split { justify-content: space-between; flex-wrap: wrap; }
+.left-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.dlg.wide { width: min(560px, calc(100vw - 32px)); }
+.facts.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+table.slip { margin: 6px 0 16px; }
+table.slip td { padding: 9px 4px; }
+table.slip tr.tot td { border-top: 2px solid var(--ink); border-bottom: 0; font-weight: 800; font-size: 16px; }
+@media (max-width: 860px) { .stats.three { grid-template-columns: 1fr; } }
+@media (max-width: 560px) { .facts.four { grid-template-columns: 1fr 1fr; } }

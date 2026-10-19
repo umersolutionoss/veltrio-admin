@@ -6,6 +6,7 @@ Static web app (no build step). Hosted on Vercel, data in Supabase.
 - `setup-pages.js` - Branches and Settings pages
 - `employees-page.js` - Employees page and staff app logins
 - `leave-page.js` - Leave requests, approvals, balances, rules, leave types and holidays
+- `payroll-page.js` - Payroll, payslips (print and CSV), advances and payroll rules
 - `config.js` - Supabase URL and publishable key (edit the key here)
 - `supabase/functions/staff-login/index.ts` - Edge Function that creates staff logins (deploy in Supabase)
 
@@ -14,3 +15,4 @@ Part 7.2: branches with map location and check-in radius, company settings, atte
 Part 7.3: employees, shifts per employee, pay, duty at another branch, staff logins (Staff ID = company code + employee code).
 Part 7.4: per-company roles and permissions for HR and branch managers, salary in its own protected table, work types (fixed, floater, field staff with store visits).
 Part 7.5: leave with company rules (approval flow, leave year, working or calendar days, weekly off, allow beyond balance), leave types, holidays, balances and adjustments.
+Part 7.6: payroll with company rules (pay period start day, day rate basis, absent cut, late rule, overtime, advances), payslips with bonus and other deductions, finalize and reopen, print and CSV.
