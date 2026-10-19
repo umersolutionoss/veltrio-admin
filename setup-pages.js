@@ -1,5 +1,5 @@
 // =============================================================
-//  Veltrio admin panel - Part 7.2
+//  Veltrio admin panel - Part 7.2 (+ 7.4 roles and permissions)
 //  Branches (map location, radius, hours, manager) and Settings
 //  (company details, attendance rules, shifts, departments,
 //  designations, plan)
@@ -11,13 +11,13 @@ const DEFAULT_CENTER = [31.5204, 74.3587]; // Lahore
 const TIME_ZONES = ['Asia/Karachi', 'Asia/Dubai', 'Asia/Riyadh', 'Asia/Qatar', 'Asia/Kolkata', 'Asia/Dhaka', 'Europe/London'];
 
 export function initSetupPages(ctx) {
-  const { sb, state, shell, topbar, bindShell, esc, busy, friendlyError } = ctx;
+  const { sb, state, shell, topbar, bindShell, esc, busy, friendlyError, can, reloadPerms } = ctx;
 
   // -------------------------------------------------------------
   // Helpers
   // -------------------------------------------------------------
   const role = () => state.profile.role;
-  const canManage = () => ['company_admin', 'hr'].includes(role());
+  const canManage = () => can('setup.manage');
   const isCompanyAdmin = () => role() === 'company_admin';
   const cid = () => state.profile.company_id;
 
@@ -363,15 +363,18 @@ export function initSetupPages(ctx) {
   // =============================================================
   async function viewSettings() {
     page('settings', 'Settings', '', '', loadingBody);
-    let company, settings, shifts, departments, designations;
+    let company, settings, shifts, departments, designations, defs = [], overrides = [];
     try {
-      const [c, s, sh, dp, dg] = await Promise.all([
+      const [c, s, sh, dp, dg, pd, rp] = await Promise.all([
         sb.from('companies').select('id, name, email, phone, address, city').eq('id', cid()).maybeSingle(),
         loadSettings(),
         sb.from('shifts').select('*').eq('company_id', cid()).order('start_time'),
         sb.from('departments').select('id, name').eq('company_id', cid()).order('name'),
         sb.from('designations').select('id, name').eq('company_id', cid()).order('name'),
+        sb.from('permission_defs').select('*').order('sort'),
+        sb.from('role_permissions').select('role, permission, allowed').eq('company_id', cid()),
       ]);
+      defs = pd.data || []; overrides = rp.data || [];
       for (const r of [c, sh, dp, dg]) if (r.error) throw r.error;
       company = c.data || {}; settings = s; shifts = sh.data || []; departments = dp.data || []; designations = dg.data || [];
     } catch (err) {
@@ -387,7 +390,7 @@ export function initSetupPages(ctx) {
     page('settings', 'Settings', 'Company details and the rules the mobile app follows.', '', `
       <nav class="subnav" aria-label="Settings sections">
         <a href="#s-company">Company</a><a href="#s-rules">Attendance rules</a><a href="#s-shifts">Shifts</a>
-        <a href="#s-teams">Departments</a><a href="#s-plan">Plan</a>
+        <a href="#s-teams">Departments</a><a href="#s-roles">Roles</a><a href="#s-plan">Plan</a>
       </nav>
 
       <section class="panel" id="s-company">
@@ -457,6 +460,27 @@ export function initSetupPages(ctx) {
           ${tagList('departments', 'Departments', departments, 'Sales, Accounts, Warehouse')}
           ${tagList('designations', 'Designations', designations, 'Sales Associate, Cashier, Supervisor')}
         </div>
+      </section>
+
+      <section class="panel" id="s-roles">
+        <h2>Roles and permissions</h2>
+        <p class="sub">Choose what HR and branch managers may do. The company admin can always do everything. Employees use only the mobile app.</p>
+        ${defs.length ? `
+        <form id="pf" novalidate>
+          ${ro}
+          <fieldset ${adminOnly}>
+            <div class="table-wrap"><table class="list perms">
+              <thead><tr><th>Permission</th><th class="c">HR</th><th class="c">Branch manager</th></tr></thead>
+              <tbody>${defs.map((d) => {
+                const val = (r) => { const o = overrides.find((x) => x.role === r && x.permission === d.key); return o ? o.allowed : (r === 'hr' ? d.hr_default : d.manager_default); };
+                return `<tr><td><b>${esc(d.label)}</b>${d.description ? `<div class="hint">${esc(d.description)}</div>` : ''}</td>
+                  <td class="c"><input type="checkbox" data-role="hr" data-perm="${esc(d.key)}" ${val('hr') ? 'checked' : ''} aria-label="HR: ${esc(d.label)}"></td>
+                  <td class="c"><input type="checkbox" data-role="branch_manager" data-perm="${esc(d.key)}" ${val('branch_manager') ? 'checked' : ''} aria-label="Branch manager: ${esc(d.label)}"></td></tr>`;
+              }).join('')}</tbody>
+            </table></div>
+            <div class="form-end gap"><button class="btn btn-ghost" type="button" id="pDefault">Use Veltrio defaults</button><button class="btn" type="submit">Save permissions</button></div>
+          </fieldset>
+        </form>` : '<p class="note">Run the Part 7.4 database update to turn on permissions.</p>'}
       </section>
 
       <section class="panel" id="s-plan">
@@ -563,6 +587,31 @@ export function initSetupPages(ctx) {
     };
     document.getElementById('addShift')?.addEventListener('click', () => openShift(null));
     document.querySelectorAll('[data-shift]').forEach((b) => b.onclick = () => openShift(shifts.find((s) => s.id === b.dataset.shift)));
+
+    // ---- Roles and permissions
+    const pf = document.getElementById('pf');
+    if (pf) {
+      pf.querySelector('#pDefault').onclick = () => {
+        pf.querySelectorAll('input[data-perm]').forEach((cb) => {
+          const d = defs.find((x) => x.key === cb.dataset.perm);
+          cb.checked = cb.dataset.role === 'hr' ? d.hr_default : d.manager_default;
+        });
+        formAlert(pf, 'Defaults filled in. Click Save permissions to keep them.', 'info');
+      };
+      pf.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const rows = [...pf.querySelectorAll('input[data-perm]')].map((cb) => ({
+          company_id: cid(), role: cb.dataset.role, permission: cb.dataset.perm, allowed: cb.checked,
+        }));
+        const btn = pf.querySelector('button[type=submit]');
+        busy(btn, true, 'Saving…');
+        const { error } = await sb.from('role_permissions').upsert(rows, { onConflict: 'company_id,role,permission' });
+        busy(btn, false);
+        if (error) return formAlert(pf, dbError(error, 'permission'));
+        if (reloadPerms) await reloadPerms();
+        formAlert(pf, 'Permissions saved. They apply the next time HR or managers open a page.', 'ok');
+      });
+    }
 
     // ---- Departments / designations
     document.querySelectorAll('form[data-tags]').forEach((form) => {

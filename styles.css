@@ -325,3 +325,12 @@ fieldset[disabled] .form-end { display: none; }
   .duty-add .field:first-child, .duty-add .field:nth-child(4) { grid-column: 1 / -1; }
   .facts.two { grid-template-columns: 1fr 1fr; }
 }
+
+/* =============== Part 7.4: permissions =============== */
+table.perms th.c, table.perms td.c { text-align: center; width: 130px; }
+table.perms td { vertical-align: middle; }
+table.perms input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--brand); cursor: pointer; }
+fieldset[disabled] table.perms input { cursor: not-allowed; }
+.form-end.gap { gap: 10px; }
+.editor-grid fieldset > h2 { margin-bottom: 14px; }
+@media (max-width: 560px) { table.perms th.c, table.perms td.c { width: 70px; } }

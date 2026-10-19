@@ -1,17 +1,24 @@
 // =============================================================
-//  Veltrio admin panel - Part 7.3
+//  Veltrio admin panel - Part 7.3 / 7.4
 //  Employees: list, add/edit, shift, pay, temporary duty at another
 //  branch, and app login (create, reset password, turn off, reset phone)
 // =============================================================
 
 const STATUS = { active: 'Active', inactive: 'Inactive', resigned: 'Resigned', terminated: 'Terminated' };
 const ROLE_LABEL = { employee: 'Employee (mobile app)', branch_manager: 'Branch manager', hr: 'HR' };
+const WORK_MODE = {
+  fixed: ['Fixed branch', 'Checks in at the home branch, or at a branch where you give duty below.'],
+  floater: ['Floater', 'Can check in at any branch. One branch per day.'],
+  field: ['Field staff', 'Visits several branches a day. Each visit is recorded with time and location.'],
+};
 const COMMISSION = { none: 'No commission', percentage: 'Percentage of sales', fixed: 'Fixed amount per month' };
 
 export function initEmployeesPage(ctx) {
-  const { sb, state, shell, bindShell, esc, busy, friendlyError, today } = ctx;
+  const { sb, state, shell, bindShell, esc, busy, friendlyError, today, can } = ctx;
   const cid = () => state.profile.company_id;
-  const canManage = () => ['company_admin', 'hr'].includes(state.profile.role);
+  const canManage = () => can('employees.manage');
+  const canOpen = () => can('employees.manage') || can('logins.manage') || can('pay.view');
+  const grantable = () => isAdmin() ? ['employee', 'branch_manager', 'hr'] : state.profile.role === 'hr' ? ['employee', 'branch_manager'] : ['employee'];
   const isAdmin = () => state.profile.role === 'company_admin';
   const num = (v) => (v === '' || v == null ? null : Number(v));
   const money = (n) => 'Rs ' + new Intl.NumberFormat('en-PK', { maximumFractionDigits: 0 }).format(Number(n) || 0);
@@ -108,7 +115,7 @@ export function initEmployeesPage(ctx) {
     }
 
     if (editId) {
-      if (editId === 'new') return editor(null, emps, look);
+      if (editId === 'new') { if (!canManage()) { location.hash = '#/employees'; return; } return editor(null, emps, look); }
       const emp = emps.find((x) => x.id === editId);
       if (!emp) { location.hash = '#/employees'; return; }
       return editor(emp, emps, look);
@@ -142,7 +149,7 @@ export function initEmployeesPage(ctx) {
       </div>
       <section class="panel flush">
         <div class="table-wrap"><table class="list">
-          <thead><tr><th>Employee</th><th>Branch</th><th>Designation</th><th>Phone</th><th>App login</th><th>Status</th>${canManage() ? '<th><span class="sr-only">Actions</span></th>' : ''}</tr></thead>
+          <thead><tr><th>Employee</th><th>Branch</th><th>Designation</th><th>Phone</th><th>App login</th><th>Status</th>${canOpen() ? '<th><span class="sr-only">Actions</span></th>' : ''}</tr></thead>
           <tbody id="rows"></tbody>
         </table></div>
         <p class="empty small" id="none" hidden>No employees match these filters.</p>
@@ -160,13 +167,13 @@ export function initEmployeesPage(ctx) {
           : lg.is_active ? `<span class="pill pill-active">${lg.role === 'employee' ? 'Active' : esc(ROLE_LABEL[lg.role] || lg.role)}</span>`
           : '<span class="pill pill-expired">Off</span>';
         return `<tr class="${e.status === 'active' ? '' : 'muted-row'}">
-          <td><b>${esc(e.full_name)}</b> <span class="code">${esc(e.employee_code)}</span>${e.father_name ? `<div class="hint">s/o ${esc(e.father_name)}</div>` : ''}</td>
+          <td><b>${esc(e.full_name)}</b> <span class="code">${esc(e.employee_code)}</span>${e.work_mode && e.work_mode !== 'fixed' ? ` <span class="pill pill-trial">${WORK_MODE[e.work_mode][0]}</span>` : ''}${e.father_name ? `<div class="hint">s/o ${esc(e.father_name)}</div>` : ''}</td>
           <td>${esc(bName(e.home_branch_id)) || '<span class="hint">None</span>'}</td>
           <td>${esc(dName(e.designation_id))}</td>
           <td class="num">${esc(e.phone)}</td>
           <td>${login}</td>
           <td>${e.status === 'active' ? '<span class="pill pill-active">Active</span>' : `<span class="pill pill-expired">${STATUS[e.status]}</span>`}</td>
-          ${canManage() ? `<td class="right"><a class="btn btn-ghost btn-sm" href="#/employees?edit=${e.id}">Open</a></td>` : ''}
+          ${canOpen() ? `<td class="right"><a class="btn btn-ghost btn-sm" href="#/employees?edit=${e.id}">Open</a></td>` : ''}
         </tr>`;
       }).join('');
     };
@@ -179,17 +186,22 @@ export function initEmployeesPage(ctx) {
   // =============================================================
   async function editor(e, emps, look) {
     const isNew = !e;
-    e = e || { status: 'active', commission_type: 'none', basic_salary: 0, commission_value: 0, joining_date: today(), employee_code: nextCode(emps) };
+    e = e || { status: 'active', work_mode: 'fixed', joining_date: today(), employee_code: nextCode(emps) };
     const t = today();
+    const editable = canManage();
+    const showPay = can('pay.view'), payEditable = can('pay.view') && can('pay.manage');
+    let pay = { basic_salary: 0, commission_type: 'none', commission_value: 0 };
 
     // current shift, temporary duties, login
     let curShift = null, duties = [], login = null;
     if (!isNew) {
-      const [s, a, p] = await Promise.all([
+      const [s, a, p, py] = await Promise.all([
         sb.from('employee_shifts').select('*').eq('employee_id', e.id).order('effective_from', { ascending: false }),
         sb.from('employee_branch_assignments').select('*').eq('employee_id', e.id).order('start_date', { ascending: false }),
         e.user_id ? sb.from('users_profile').select('id, role, is_active').eq('id', e.user_id).maybeSingle() : Promise.resolve({ data: null }),
+        showPay ? sb.from('employee_pay').select('basic_salary, commission_type, commission_value').eq('employee_id', e.id).maybeSingle() : Promise.resolve({ data: null }),
       ]);
+      if (py.data) pay = py.data;
       curShift = (s.data || []).find((x) => x.effective_from <= t && (!x.effective_to || x.effective_to >= t)) || null;
       duties = (a.data || []).filter((x) => !x.end_date || x.end_date >= t);
       login = p.data || null;
@@ -200,8 +212,9 @@ export function initEmployeesPage(ctx) {
 
     page(isNew ? 'Add employee' : e.full_name, '<a href="#/employees">Back to employees</a>', '', `
       <form id="ef" novalidate>
+        ${editable ? '' : '<p class="note">You can view these details. Only people with the “Add and edit employees” permission can change them.</p>'}
         <div class="editor-grid even">
-          <section class="panel">
+          <section class="panel"><fieldset ${editable ? '' : 'disabled'}>
             <h2>Personal details</h2>
             <div class="field"><label for="full_name">Full name</label><input id="full_name" value="${esc(e.full_name)}" required></div>
             <div class="field"><label for="father_name">Father’s name <span class="opt">optional</span></label><input id="father_name" value="${esc(e.father_name)}"></div>
@@ -211,16 +224,20 @@ export function initEmployeesPage(ctx) {
             </div>
             <div class="field"><label for="email">Email <span class="opt">optional</span></label><input id="email" type="email" value="${esc(e.email)}"></div>
             <div class="field"><label for="address">Address <span class="opt">optional</span></label><input id="address" value="${esc(e.address)}"></div>
-          </section>
+          </fieldset></section>
 
-          <section class="panel">
+          <section class="panel"><fieldset ${editable ? '' : 'disabled'}>
             <h2>Job</h2>
             <div class="row-2">
               <div class="field"><label for="code">Employee code</label><input id="code" value="${esc(e.employee_code)}" ${login ? 'readonly aria-describedby="codeHint"' : ''} required>
                 ${login ? '<span class="hint" id="codeHint">Fixed, because it is part of the app login.</span>' : '<span class="hint">Letters, numbers and dashes.</span>'}</div>
               <div class="field"><label for="joining">Joining date</label><input id="joining" type="date" value="${esc(e.joining_date)}"></div>
             </div>
-            <div class="field"><label for="branch">Home branch</label><select id="branch">${opt(activeBranches, e.home_branch_id, 'Choose a branch')}</select></div>
+            <div class="field"><label for="mode">Work type</label>
+              <select id="mode">${Object.entries(WORK_MODE).map(([k, [lbl]]) => `<option value="${k}" ${k === (e.work_mode || 'fixed') ? 'selected' : ''}>${lbl}</option>`).join('')}</select>
+              <span class="hint" id="modeHint"></span></div>
+            <div class="field"><label for="branch">Home branch</label><select id="branch">${opt(activeBranches, e.home_branch_id, 'Choose a branch')}</select>
+              <span class="hint">Used for reports and the branch manager’s view.</span></div>
             <div class="row-2">
               <div class="field"><label for="dept">Department</label><select id="dept">${opt(look.departments, e.department_id, 'None')}</select></div>
               <div class="field"><label for="desig">Designation</label><select id="desig">${opt(look.designations, e.designation_id, 'None')}</select></div>
@@ -232,25 +249,27 @@ export function initEmployeesPage(ctx) {
             <div class="field"><label for="status">Status</label>
               <select id="status">${Object.entries(STATUS).map(([k, v]) => `<option value="${k}" ${k === e.status ? 'selected' : ''}>${v}</option>`).join('')}</select>
               ${login ? '<span class="hint">If the employee leaves, set Resigned and also turn off the app login below.</span>' : ''}</div>
-          </section>
+          </fieldset></section>
 
-          <section class="panel">
+          ${showPay ? `
+          <section class="panel"><fieldset ${payEditable ? '' : 'disabled'}>
             <h2>Pay</h2>
-            <div class="field"><label for="salary">Basic salary per month (Rs)</label><input id="salary" type="number" min="0" step="100" value="${e.basic_salary ?? 0}"></div>
+            ${payEditable ? '' : '<p class="note">You can see pay but not change it.</p>'}
+            <div class="field"><label for="salary">Basic salary per month (Rs)</label><input id="salary" type="number" min="0" step="100" value="${pay.basic_salary ?? 0}"></div>
             <div class="row-2">
               <div class="field"><label for="ctype">Commission</label>
-                <select id="ctype">${Object.entries(COMMISSION).concat(e.commission_type === 'slab' ? [['slab', 'Slab (set later)']] : []).map(([k, v]) => `<option value="${k}" ${k === e.commission_type ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
-              <div class="field" id="cvalWrap"><label for="cval" id="cvalLabel">Commission</label><input id="cval" type="number" min="0" step="0.01" value="${e.commission_value ?? 0}"></div>
+                <select id="ctype">${Object.entries(COMMISSION).concat(pay.commission_type === 'slab' ? [['slab', 'Slab (set later)']] : []).map(([k, v]) => `<option value="${k}" ${k === pay.commission_type ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+              <div class="field" id="cvalWrap"><label for="cval" id="cvalLabel">Commission</label><input id="cval" type="number" min="0" step="0.01" value="${pay.commission_value ?? 0}"></div>
             </div>
             <p class="hint" id="cHint"></p>
-          </section>
+          </fieldset></section>` : ''}
 
-          ${isNew ? '' : loginPanel(e, login, staffId, look.loginCode)}
+          ${isNew || !can('logins.manage') ? '' : loginPanel(e, login, staffId, look.loginCode)}
           ${isNew ? '' : dutyPanel(duties, look.branches)}
         </div>
         <div class="form-bar">
-          <a class="btn btn-ghost" href="#/employees">Cancel</a>
-          <button class="btn" type="submit" id="saveEmp">${isNew ? 'Add employee' : 'Save changes'}</button>
+          <a class="btn btn-ghost" href="#/employees">${editable || payEditable ? 'Cancel' : 'Back'}</a>
+          ${editable || payEditable ? `<button class="btn" type="submit" id="saveEmp">${isNew ? 'Add employee' : 'Save changes'}</button>` : ''}
         </div>
       </form>
       <dialog id="dlg" class="dlg"></dialog>`);
@@ -258,14 +277,20 @@ export function initEmployeesPage(ctx) {
     const f = document.getElementById('ef');
     const $ = (id) => f.querySelector('#' + id);
 
+    // work type hint
+    const syncM = () => { $('modeHint').textContent = WORK_MODE[$('mode').value][1]; };
+    $('mode').addEventListener('change', syncM); syncM();
+
     // commission field
-    const syncC = () => {
-      const tp = $('ctype').value;
-      $('cvalWrap').hidden = tp === 'none' || tp === 'slab';
-      $('cvalLabel').textContent = tp === 'percentage' ? 'Percent of sales (%)' : 'Amount per month (Rs)';
-      $('cHint').textContent = tp === 'percentage' ? `Example: 2% of Rs 500,000 monthly sales = ${money(10000)}.` : '';
-    };
-    $('ctype').addEventListener('change', syncC); syncC();
+    if (showPay) {
+      const syncC = () => {
+        const tp = $('ctype').value;
+        $('cvalWrap').hidden = tp === 'none' || tp === 'slab';
+        $('cvalLabel').textContent = tp === 'percentage' ? 'Percent of sales (%)' : 'Amount per month (Rs)';
+        $('cHint').textContent = tp === 'percentage' ? `Example: 2% of Rs 500,000 monthly sales = ${money(10000)}.` : '';
+      };
+      $('ctype').addEventListener('change', syncC); syncC();
+    }
 
     // ---- Save employee
     f.addEventListener('submit', async (ev) => {
@@ -283,18 +308,21 @@ export function initEmployeesPage(ctx) {
         department_id: $('dept').value || null,
         designation_id: $('desig').value || null,
         status: $('status').value,
+        work_mode: $('mode').value,
+      };
+      const pv = payEditable ? {
         basic_salary: num($('salary').value) ?? 0,
         commission_type: $('ctype').value,
         commission_value: $('ctype').value === 'none' ? 0 : (num($('cval').value) ?? 0),
-      };
+      } : null;
       const shiftId = $('shift').value || null;
 
       if (!v.full_name) return formAlert(f, 'Enter the employee’s full name.');
       if (!/^[A-Z0-9][A-Z0-9-]{0,19}$/.test(v.employee_code)) return formAlert(f, 'Employee code can use only letters, numbers and dashes, for example E01.');
       if (!v.home_branch_id) return formAlert(f, 'Choose the home branch.');
       if (v.cnic && !/^\d{5}-?\d{7}-?\d$/.test(v.cnic)) return formAlert(f, 'CNIC should look like 35202-1234567-1.');
-      if (v.basic_salary < 0 || v.commission_value < 0) return formAlert(f, 'Salary and commission cannot be negative.');
-      if (v.commission_type === 'percentage' && v.commission_value > 100) return formAlert(f, 'Commission percent cannot be more than 100.');
+      if (pv && (pv.basic_salary < 0 || pv.commission_value < 0)) return formAlert(f, 'Salary and commission cannot be negative.');
+      if (pv && pv.commission_type === 'percentage' && pv.commission_value > 100) return formAlert(f, 'Commission percent cannot be more than 100.');
 
       const btn = $('saveEmp');
       busy(btn, true, 'Saving…');
@@ -303,14 +331,20 @@ export function initEmployeesPage(ctx) {
         const { data, error } = await sb.from('employees').insert({ ...v, company_id: cid() }).select('id').single();
         if (error) { busy(btn, false); return formAlert(f, dbError(error)); }
         empId = data.id;
-      } else {
+      } else if (editable) {
         const { error } = await sb.from('employees').update(v).eq('id', e.id);
         if (error) { busy(btn, false); return formAlert(f, dbError(error)); }
       }
 
+      // pay lives in its own table (the row is created automatically)
+      if (pv && (isNew || pv.basic_salary !== Number(pay.basic_salary) || pv.commission_type !== pay.commission_type || pv.commission_value !== Number(pay.commission_value))) {
+        const { error } = await sb.from('employee_pay').update(pv).eq('employee_id', empId);
+        if (error) { busy(btn, false); return formAlert(f, (isNew ? 'Employee added, but the pay could not be saved: ' : 'Pay could not be saved: ') + dbError(error)); }
+      }
+
       // shift change: close the old assignment from today, start the new one today
       const oldShift = curShift?.shift_id || null;
-      if (shiftId !== oldShift) {
+      if (editable && shiftId !== oldShift) {
         let err = null;
         if (curShift) {
           const r = curShift.effective_from >= t
@@ -343,7 +377,7 @@ export function initEmployeesPage(ctx) {
   // App login panel
   // ---------------------------------------------------------------
   function loginPanel(e, login, staffId, loginCode) {
-    const roles = isAdmin() ? ['employee', 'branch_manager', 'hr'] : ['employee', 'branch_manager'];
+    const roles = grantable();
     if (!login) {
       return `
       <section class="panel" id="loginPanel">
@@ -358,7 +392,7 @@ export function initEmployeesPage(ctx) {
         <button type="button" class="btn" id="l_create">Create login</button>`}
       </section>`;
     }
-    const canTouch = isAdmin() || login.role !== 'hr';
+    const canTouch = grantable().includes(login.role) && login.id !== state.session.user.id;
     return `
       <section class="panel" id="loginPanel">
         <h2>App login</h2>
@@ -368,13 +402,13 @@ export function initEmployeesPage(ctx) {
           <div><dt>Login</dt><dd>${login.is_active ? 'On' : 'Off'}</dd></div>
           <div><dt>Phone</dt><dd>${e.registered_device_id ? 'Locked to one phone' : 'Not used yet'}</dd></div>
         </dl>
-        ${canTouch ? `
+        ${login.id === state.session.user.id ? '<p class="note">This is your own login. Change your password from the login page.</p>' : canTouch ? `
         <div class="login-actions">
           <button type="button" class="btn btn-ghost btn-sm" id="l_reset">Set new password</button>
           ${e.registered_device_id ? '<button type="button" class="btn btn-ghost btn-sm" id="l_device">Allow a new phone</button>' : ''}
-          <button type="button" class="btn btn-ghost btn-sm" id="l_role2">Change access</button>
+          ${grantable().length > 1 ? '<button type="button" class="btn btn-ghost btn-sm" id="l_role2">Change access</button>' : ''}
           <button type="button" class="btn btn-ghost btn-sm ${login.is_active ? 'danger' : ''}" id="l_toggle">${login.is_active ? 'Turn off login' : 'Turn on login'}</button>
-        </div>` : '<p class="note">Only the company admin can change an HR login.</p>'}
+        </div>` : `<p class="note">${login.role === 'hr' ? 'Only the company admin can change an HR login.' : 'You cannot change this login.'}</p>`}
         <p class="hint">Staff log in with the Staff ID and password. ${e.registered_device_id ? 'The app works only on the phone they first used. If they change phones, click "Allow a new phone".' : 'The first phone they log in on becomes their registered phone.'}</p>
       </section>`;
   }
@@ -422,7 +456,7 @@ export function initEmployeesPage(ctx) {
         });
     });
     panel.querySelector('#l_role2')?.addEventListener('click', () => {
-      const roles = isAdmin() ? ['employee', 'branch_manager', 'hr'] : ['employee', 'branch_manager'];
+      const roles = grantable();
       ask('Change access', `<div class="field"><label for="d_role">Access for ${esc(e.full_name)}</label><select id="d_role">${roles.map((r) => `<option value="${r}" ${r === login.role ? 'selected' : ''}>${ROLE_LABEL[r]}</option>`).join('')}</select>
         <span class="hint">Branch managers and HR also log in to this web panel with their Staff ID.</span></div>`, 'Save access',
         async (dlg, btn) => {
@@ -439,7 +473,7 @@ export function initEmployeesPage(ctx) {
     panel.querySelector('#l_device')?.addEventListener('click', async (ev) => {
       if (!confirm(`Allow ${e.full_name} to use a new phone? The next phone they log in on becomes their registered phone.`)) return;
       const btn = ev.currentTarget; busy(btn, true, 'Saving…');
-      const { error } = await sb.from('employees').update({ registered_device_id: null }).eq('id', e.id);
+      const { error } = await sb.rpc('reset_employee_device', { p_employee: e.id });
       busy(btn, false);
       if (error) return formAlert(panel, dbError(error));
       toast('New phone allowed'); viewEmployees(e.id);

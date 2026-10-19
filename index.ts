@@ -9,8 +9,10 @@
 //    { action: "set_active",     employee_id, active: true|false }
 //    { action: "set_role",       employee_id, role }
 //
-//  Only a Company Admin or HR of the same company can call it.
-//  HR can manage only employees and branch managers.
+//  Allowed: the Company Admin, or HR / Branch Manager when the company
+//  gave them the "Staff app logins" permission (Settings > Roles).
+//  HR can give Employee or Branch Manager access; a Branch Manager can
+//  give Employee access to staff of their own branch only.
 // =====================================================================
 
 const CORS = {
@@ -29,6 +31,7 @@ const STAFF_ROLES = ['employee', 'branch_manager', 'hr'];
 const canGrant = (callerRole: string, role: string) =>
   callerRole === 'company_admin' ? STAFF_ROLES.includes(role)
     : callerRole === 'hr' ? ['employee', 'branch_manager'].includes(role)
+    : callerRole === 'branch_manager' ? role === 'employee'
     : false;
 
 class Fail extends Error {
@@ -39,6 +42,17 @@ class Fail extends Error {
 // deno-lint-ignore no-explicit-any
 type Admin = any;
 
+// Same rule as private.can() in the database
+async function callerCan(admin: Admin, caller: { role: string; company_id: string }, key: string) {
+  if (caller.role === 'company_admin') return true;
+  if (!['hr', 'branch_manager'].includes(caller.role)) return false;
+  const { data: o } = await admin.from('role_permissions').select('allowed')
+    .eq('company_id', caller.company_id).eq('role', caller.role).eq('permission', key).maybeSingle();
+  if (o) return !!o.allowed;
+  const { data: d } = await admin.from('permission_defs').select('hr_default, manager_default').eq('key', key).maybeSingle();
+  return !!(d && (caller.role === 'hr' ? d.hr_default : d.manager_default));
+}
+
 export async function handle(body: Record<string, unknown>, token: string, admin: Admin) {
   // ---- Who is calling?
   if (!token) throw new Fail('Please log in again.', 401);
@@ -48,16 +62,23 @@ export async function handle(body: Record<string, unknown>, token: string, admin
 
   const { data: caller } = await admin.from('users_profile')
     .select('id, role, company_id, is_active').eq('id', callerId).maybeSingle();
-  if (!caller || !caller.is_active || !['company_admin', 'hr'].includes(caller.role)) {
-    throw new Fail('Only a company admin or HR can manage staff logins.', 403);
+  if (!caller || !caller.is_active || !(await callerCan(admin, caller, 'logins.manage'))) {
+    throw new Fail('You do not have permission to manage staff logins. Ask your company admin.', 403);
   }
 
   // ---- Which employee?
   const employeeId = String(body.employee_id || '');
   const { data: emp } = await admin.from('employees')
-    .select('id, company_id, user_id, employee_code, full_name, phone, status')
+    .select('id, company_id, user_id, employee_code, full_name, phone, status, home_branch_id')
     .eq('id', employeeId).maybeSingle();
   if (!emp || emp.company_id !== caller.company_id) throw new Fail('Employee not found.', 404);
+
+  // A branch manager without "see staff of all branches" handles only their own branch
+  if (caller.role === 'branch_manager' && !(await callerCan(admin, caller, 'employees.view_all'))) {
+    const { data: me } = await admin.from('employees').select('id').eq('user_id', callerId).maybeSingle();
+    const { data: br } = me ? await admin.from('branches').select('id').eq('id', emp.home_branch_id).eq('manager_employee_id', me.id).maybeSingle() : { data: null };
+    if (!br) throw new Fail('You can manage logins only for staff of your own branch.', 403);
+  }
 
   const { data: company } = await admin.from('companies')
     .select('id, login_code, status').eq('id', caller.company_id).maybeSingle();
@@ -71,7 +92,7 @@ export async function handle(body: Record<string, unknown>, token: string, admin
   const mustOwnTarget = () => {
     if (!emp.user_id || !target) throw new Fail('This employee has no app login yet.');
     if (emp.user_id === callerId) throw new Fail('You cannot change your own login here.');
-    if (!canGrant(caller.role, target.role)) throw new Fail('Only the company admin can change an HR login.', 403);
+    if (!canGrant(caller.role, target.role)) throw new Fail(target.role === 'hr' ? 'Only the company admin can change an HR login.' : 'You cannot change this login.', 403);
   };
   const checkPassword = (p: unknown) => {
     const s = String(p || '');

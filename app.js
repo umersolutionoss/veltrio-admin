@@ -3,6 +3,7 @@
 //  7.1 Login, company signup, company setup, dashboard, super admin overview
 //  7.2 Branches and settings (see setup-pages.js)
 //  7.3 Employees and staff app logins (see employees-page.js)
+//  7.4 Per-company permissions for HR and branch managers
 // =============================================================
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 import { SUPABASE_URL, SUPABASE_KEY, TIME_ZONE } from './config.js';
@@ -132,7 +133,30 @@ async function loadProfile() {
     ]);
     state.company = c.data || null;
     state.sub = s.data || null;
+    await reloadPerms();
   }
+}
+
+// What HR and branch managers may do in this company (company admin: everything)
+async function reloadPerms() {
+  const p = state.profile;
+  state.perms = new Set();
+  if (!p || !['hr', 'branch_manager'].includes(p.role)) return;
+  const [d, o] = await Promise.all([
+    sb.from('permission_defs').select('key, hr_default, manager_default'),
+    sb.from('role_permissions').select('permission, allowed').eq('company_id', p.company_id).eq('role', p.role),
+  ]);
+  for (const def of d.data || []) {
+    const ov = (o.data || []).find((x) => x.permission === def.key);
+    const on = ov ? ov.allowed : (p.role === 'hr' ? def.hr_default : def.manager_default);
+    if (on) state.perms.add(def.key);
+  }
+}
+function can(key) {
+  const r = state.profile?.role;
+  if (r === 'company_admin') return true;
+  if (r === 'hr' || r === 'branch_manager') return !!state.perms?.has(key);
+  return false;
 }
 
 async function count(table, filter) {
@@ -614,8 +638,8 @@ async function render() {
   }
 }
 
-const pages = initSetupPages({ sb, state, shell, topbar, bindShell, esc, busy, friendlyError });
-const employees = initEmployeesPage({ sb, state, shell, bindShell, esc, busy, friendlyError, today });
+const pages = initSetupPages({ sb, state, shell, topbar, bindShell, esc, busy, friendlyError, can, reloadPerms });
+const employees = initEmployeesPage({ sb, state, shell, bindShell, esc, busy, friendlyError, today, can });
 
 window.addEventListener('hashchange', (e) => {
   // In-page section links (#s-shifts) on the settings page are not routes
