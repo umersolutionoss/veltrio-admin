@@ -246,6 +246,9 @@ export function initEmployeesPage(ctx) {
               <select id="shift"><option value="">No shift</option>${look.shifts.filter((s) => s.is_active || s.id === curShift?.shift_id).map((s) => `<option value="${s.id}" ${s.id === curShift?.shift_id ? 'selected' : ''}>${esc(s.name)} (${s.start_time.slice(0, 5)} to ${s.end_time.slice(0, 5)})</option>`).join('')}</select>
               <span class="hint">${look.shifts.length ? 'Late and early leaving are worked out from this shift.' : 'Add shifts in Settings to track late arrivals.'}</span></div>
             ${(!look.departments.length || !look.designations.length) ? '<p class="hint">Add departments and designations in Settings.</p>' : ''}
+            <div class="field"><span class="label">Weekly off</span>
+              <label class="check"><input type="checkbox" id="offDefault" ${e.weekly_off_days ? '' : 'checked'}> Same as company</label>
+              <div class="daypick" id="offDays" ${e.weekly_off_days ? '' : 'hidden'}>${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d, i) => `<label><input type="checkbox" name="eoff" value="${i}" ${(e.weekly_off_days || []).includes(i) ? 'checked' : ''}><span>${d}</span></label>`).join('')}</div></div>
             <div class="field"><label for="status">Status</label>
               <select id="status">${Object.entries(STATUS).map(([k, v]) => `<option value="${k}" ${k === e.status ? 'selected' : ''}>${v}</option>`).join('')}</select>
               ${login ? '<span class="hint">If the employee leaves, set Resigned and also turn off the app login below.</span>' : ''}</div>
@@ -276,6 +279,9 @@ export function initEmployeesPage(ctx) {
 
     const f = document.getElementById('ef');
     const $ = (id) => f.querySelector('#' + id);
+
+    // weekly off
+    $('offDefault').addEventListener('change', () => { $('offDays').hidden = $('offDefault').checked; });
 
     // work type hint
     const syncM = () => { $('modeHint').textContent = WORK_MODE[$('mode').value][1]; };
@@ -309,6 +315,7 @@ export function initEmployeesPage(ctx) {
         designation_id: $('desig').value || null,
         status: $('status').value,
         work_mode: $('mode').value,
+        weekly_off_days: $('offDefault').checked ? null : [...f.querySelectorAll('input[name=eoff]:checked')].map((x) => Number(x.value)),
       };
       const pv = payEditable ? {
         basic_salary: num($('salary').value) ?? 0,
@@ -320,6 +327,7 @@ export function initEmployeesPage(ctx) {
       if (!v.full_name) return formAlert(f, 'Enter the employee’s full name.');
       if (!/^[A-Z0-9][A-Z0-9-]{0,19}$/.test(v.employee_code)) return formAlert(f, 'Employee code can use only letters, numbers and dashes, for example E01.');
       if (!v.home_branch_id) return formAlert(f, 'Choose the home branch.');
+      if (v.weekly_off_days && v.weekly_off_days.length > 3) return formAlert(f, 'Choose at most 3 weekly off days.');
       if (v.cnic && !/^\d{5}-?\d{7}-?\d$/.test(v.cnic)) return formAlert(f, 'CNIC should look like 35202-1234567-1.');
       if (pv && (pv.basic_salary < 0 || pv.commission_value < 0)) return formAlert(f, 'Salary and commission cannot be negative.');
       if (pv && pv.commission_type === 'percentage' && pv.commission_value > 100) return formAlert(f, 'Commission percent cannot be more than 100.');

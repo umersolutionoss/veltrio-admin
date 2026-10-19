@@ -156,7 +156,7 @@ button, input, select { font: inherit; color: inherit; }
 .steps .d { color: var(--muted); font-size: 14px; }
 
 /* Tables */
-.table-wrap { overflow-x: auto; }
+.table-wrap { overflow-x: auto; position: relative; }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th { text-align: left; color: var(--muted); font-weight: 600; padding: 10px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 td { padding: 12px; border-bottom: 1px solid var(--line); }
@@ -334,3 +334,34 @@ fieldset[disabled] table.perms input { cursor: not-allowed; }
 .form-end.gap { gap: 10px; }
 .editor-grid fieldset > h2 { margin-bottom: 14px; }
 @media (max-width: 560px) { table.perms th.c, table.perms td.c { width: 70px; } }
+
+/* =============== Part 7.5: leave =============== */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: -8px 0 20px; overflow-x: auto; }
+.tabs a { padding: 10px 14px; font-weight: 700; font-size: 14px; color: var(--muted); text-decoration: none; border-bottom: 3px solid transparent; margin-bottom: -1px; white-space: nowrap; }
+.tabs a:hover { color: var(--ink); }
+.tabs a.on { color: var(--brand); border-bottom-color: var(--gold); }
+.flow-note { align-self: center; }
+.nowrap { white-space: nowrap; }
+.field .label { font-weight: 600; font-size: 14px; }
+.choices { display: grid; gap: 8px; }
+.choice { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-sm); cursor: pointer; }
+.choice:has(input:checked) { border-color: var(--brand-2); background: var(--brand-soft); }
+.choice input { margin-top: 3px; accent-color: var(--brand); width: 17px; height: 17px; flex: none; }
+.choice b { display: block; font-size: 14px; }
+.choice .hint { display: block; }
+.daypick { display: flex; flex-wrap: wrap; gap: 6px; }
+.daypick label { cursor: pointer; }
+.daypick input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.daypick span { display: inline-block; min-width: 48px; text-align: center; padding: 7px 10px; border: 1px solid var(--line); border-radius: 99px; font-weight: 700; font-size: 14px; background: #fff; }
+.daypick input:checked + span { background: var(--brand); border-color: var(--brand); color: #fff; }
+.daypick input:focus-visible + span { outline: 3px solid var(--gold); outline-offset: 2px; }
+fieldset[disabled] .daypick span, fieldset[disabled] .choice { opacity: .7; cursor: not-allowed; }
+table.bal th.c, table.bal td.c { text-align: center; }
+table.bal td.c b { font-size: 16px; }
+table.bal .neg { color: var(--bad); }
+.hol-add { display: grid; grid-template-columns: 180px 1fr auto; gap: 0 12px; align-items: end; padding-top: 14px; border-top: 1px solid var(--line); }
+.hol-add .btn { margin-bottom: 14px; }
+.hol-add > .alert { grid-column: 1 / -1; }
+@media (max-width: 560px) { .hol-add { grid-template-columns: 1fr; } .hol-add .btn { justify-self: start; } }
+
+[hidden] { display: none !important; }

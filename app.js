@@ -4,11 +4,13 @@
 //  7.2 Branches and settings (see setup-pages.js)
 //  7.3 Employees and staff app logins (see employees-page.js)
 //  7.4 Per-company permissions for HR and branch managers
+//  7.5 Leave: requests, approvals, balances, rules (see leave-page.js)
 // =============================================================
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 import { SUPABASE_URL, SUPABASE_KEY, TIME_ZONE } from './config.js';
 import { initSetupPages } from './setup-pages.js';
 import { initEmployeesPage } from './employees-page.js';
+import { initLeavePage } from './leave-page.js';
 
 // Staff log in with "<company code>-<employee code>", e.g. BV7K2-E01.
 // It maps to the hidden login email the staff-login function creates.
@@ -90,6 +92,7 @@ const ICONS = {
   employees: '<circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3-6 7-6s7 2 7 6M17 11a3 3 0 1 0 0-6M22 21c0-3-2-5-4-5.5"/>',
   products: '<path d="M21 8l-9-5-9 5 9 5 9-5zM3 8v8l9 5 9-5V8M12 13v8"/>',
   attendance: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  leave: '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4M9 15l2 2 4-4"/>',
   closings: '<path d="M6 2h12v20l-3-2-3 2-3-2-3 2zM9 7h6M9 11h6M9 15h4"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
   companies: '<path d="M3 21h18M6 21V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v16M10 7h4M10 11h4M10 15h4"/>',
@@ -100,7 +103,7 @@ const icon = (k) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" 
 
 const COMPANY_NAV = [
   ['dashboard', 'Dashboard'], ['branches', 'Branches'], ['employees', 'Employees'],
-  ['products', 'Products'], ['attendance', 'Attendance'], ['closings', 'Sales closing'],
+  ['products', 'Products'], ['attendance', 'Attendance'], ['leave', 'Leave'], ['closings', 'Sales closing'],
   ['settings', 'Settings'],
 ];
 const ADMIN_NAV = [
@@ -628,6 +631,7 @@ async function render() {
     if (r === 'branches') return pages.viewBranches(query().get('edit'));
     if (r === 'settings') return pages.viewSettings();
     if (r === 'employees') return employees.viewEmployees(query().get('edit'));
+    if (r === 'leave') return leave.viewLeave(query().get('tab'));
     return viewComing(r);
   } catch (err) {
     console.error(err);
@@ -640,6 +644,7 @@ async function render() {
 
 const pages = initSetupPages({ sb, state, shell, topbar, bindShell, esc, busy, friendlyError, can, reloadPerms });
 const employees = initEmployeesPage({ sb, state, shell, bindShell, esc, busy, friendlyError, today, can });
+const leave = initLeavePage({ sb, state, shell, bindShell, esc, busy, friendlyError, today, can });
 
 window.addEventListener('hashchange', (e) => {
   // In-page section links (#s-shifts) on the settings page are not routes
