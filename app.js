@@ -2,10 +2,24 @@
 //  Veltrio admin panel
 //  7.1 Login, company signup, company setup, dashboard, super admin overview
 //  7.2 Branches and settings (see setup-pages.js)
+//  7.3 Employees and staff app logins (see employees-page.js)
 // =============================================================
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 import { SUPABASE_URL, SUPABASE_KEY, TIME_ZONE } from './config.js';
 import { initSetupPages } from './setup-pages.js';
+import { initEmployeesPage } from './employees-page.js';
+
+// Staff log in with "<company code>-<employee code>", e.g. BV7K2-E01.
+// It maps to the hidden login email the staff-login function creates.
+const STAFF_DOMAIN = 'staff.veltrio.app';
+const slug = (s) => String(s || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+function loginEmail(input) {
+  const v = String(input || '').trim();
+  if (v.includes('@')) return v;
+  const i = v.indexOf('-');
+  if (i < 1) return v;
+  return `${slug(v.slice(i + 1))}.${slug(v.slice(0, i))}@${STAFF_DOMAIN}`;
+}
 
 const app = document.getElementById('app');
 
@@ -41,7 +55,8 @@ const ROLE_NAMES = {
 
 function friendlyError(err) {
   const m = (err && (err.message || err.error_description)) || String(err);
-  if (/Invalid login credentials/i.test(m)) return 'Email or password is incorrect.';
+  if (/Invalid login credentials/i.test(m)) return 'Email, Staff ID or password is incorrect.';
+  if (/banned/i.test(m)) return 'This login is turned off. Ask your company admin or HR.';
   if (/Email not confirmed/i.test(m)) return 'Please confirm your email first. Check your inbox for the link from Veltrio.';
   if (/already registered|already been registered/i.test(m)) return 'An account with this email already exists. Log in instead.';
   if (/Password should be at least/i.test(m)) return 'Password must be at least 8 characters.';
@@ -91,7 +106,6 @@ const ADMIN_NAV = [
   ['dashboard', 'Overview'], ['companies', 'Companies'], ['payments', 'Payments'], ['plans', 'Plans'],
 ];
 const COMING = {
-  employees: ['Employees', 'Add staff, set salary and commission, and create their app login.', '7.3'],
   products: ['Products', 'Add products and prices that employees pick in their daily closing.', '7.4'],
   attendance: ['Attendance', 'See who checked in today, who is late and who is absent.', '7.5'],
   closings: ['Sales closing', 'Daily closings by employee and branch, corrections and Excel export.', '7.6'],
@@ -171,7 +185,7 @@ function viewLogin() {
     <p class="sub">Welcome back. Log in to manage your company.</p>
     <form id="f" novalidate>
       ${notice ? `<div class="alert alert-ok" role="status">${esc(notice)}</div>` : ''}
-      <div class="field"><label for="email">Email</label><input id="email" type="email" autocomplete="email" required></div>
+      <div class="field"><label for="email">Email or Staff ID</label><input id="email" autocomplete="username" required><span class="hint">Staff use their Staff ID, for example BV7K2-E01.</span></div>
       <div class="field">
         <div class="label-row"><label for="pw">Password</label><a href="#/forgot">Forgot password?</a></div>
         <input id="pw" type="password" autocomplete="current-password" required>
@@ -183,8 +197,8 @@ function viewLogin() {
   const f = document.getElementById('f');
   f.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const email = f.email.value.trim(), password = f.pw.value;
-    if (!email || !password) return showAlert(f, 'Enter your email and password.');
+    const email = loginEmail(f.email.value), password = f.pw.value;
+    if (!email || !password) return showAlert(f, 'Enter your email or Staff ID, and your password.');
     const btn = f.querySelector('button');
     busy(btn, true, 'Logging in…');
     const { error } = await sb.auth.signInWithPassword({ email, password });
@@ -589,6 +603,7 @@ async function render() {
     if (r === 'dashboard') return isSuper ? viewSuperDashboard() : viewCompanyDashboard();
     if (r === 'branches') return pages.viewBranches(query().get('edit'));
     if (r === 'settings') return pages.viewSettings();
+    if (r === 'employees') return employees.viewEmployees(query().get('edit'));
     return viewComing(r);
   } catch (err) {
     console.error(err);
@@ -600,6 +615,7 @@ async function render() {
 }
 
 const pages = initSetupPages({ sb, state, shell, topbar, bindShell, esc, busy, friendlyError });
+const employees = initEmployeesPage({ sb, state, shell, bindShell, esc, busy, friendlyError, today });
 
 window.addEventListener('hashchange', (e) => {
   // In-page section links (#s-shifts) on the settings page are not routes
