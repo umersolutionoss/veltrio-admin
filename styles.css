@@ -383,3 +383,17 @@ table.slip td { padding: 9px 4px; }
 table.slip tr.tot td { border-top: 2px solid var(--ink); border-bottom: 0; font-weight: 800; font-size: 16px; }
 @media (max-width: 860px) { .stats.three { grid-template-columns: 1fr; } }
 @media (max-width: 560px) { .facts.four { grid-template-columns: 1fr 1fr; } }
+
+/* =============== Part 7.7: products, attendance, closings =============== */
+.pill-neutral { background: #ECEFF1; color: #46555C; }
+.filters label.inline { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: 14px; }
+.topbar .actions input[type=date] { padding: 9px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; font-weight: 600; }
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+table.compact td, table.compact th { padding: 8px 6px; }
+table.list th.r, table.list td.r { text-align: right; }
+td.neg, .neg { color: var(--bad); }
+h3.mini { font-size: 14px; margin: 14px 0 6px; }
+.edit-lines input, .edit-lines select { width: 100%; min-width: 64px; padding: 7px 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; }
+.edit-lines td:first-child { min-width: 160px; }
+textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); font: inherit; resize: vertical; }
+@media (max-width: 860px) { .two-col { grid-template-columns: 1fr; } }

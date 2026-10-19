@@ -6,6 +6,7 @@
 //  7.4 Per-company permissions for HR and branch managers
 //  7.5 Leave: requests, approvals, balances, rules (see leave-page.js)
 //  7.6 Payroll: payslips, advances, payroll rules (see payroll-page.js)
+//  7.7 Products, attendance and sales closing reports (see reports-pages.js)
 // =============================================================
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 import { SUPABASE_URL, SUPABASE_KEY, TIME_ZONE } from './config.js';
@@ -13,6 +14,7 @@ import { initSetupPages } from './setup-pages.js';
 import { initEmployeesPage } from './employees-page.js';
 import { initLeavePage } from './leave-page.js';
 import { initPayrollPage } from './payroll-page.js';
+import { initReportPages } from './reports-pages.js';
 
 // Staff log in with "<company code>-<employee code>", e.g. BV7K2-E01.
 // It maps to the hidden login email the staff-login function creates.
@@ -113,9 +115,6 @@ const ADMIN_NAV = [
   ['dashboard', 'Overview'], ['companies', 'Companies'], ['payments', 'Payments'], ['plans', 'Plans'],
 ];
 const COMING = {
-  products: ['Products', 'Add products and prices that employees pick in their daily closing.', '7.4'],
-  attendance: ['Attendance', 'See who checked in today, who is late and who is absent.', '7.5'],
-  closings: ['Sales closing', 'Daily closings by employee and branch, corrections and Excel export.', '7.6'],
   companies: ['Companies', 'All companies on Veltrio, their plan, status and usage.', '7.7'],
   payments: ['Payments', 'Approve bank transfer, JazzCash and Easypaisa payments.', '7.7'],
   plans: ['Plans', 'Set prices and limits for Starter, Business and Enterprise.', '7.7'],
@@ -140,6 +139,8 @@ async function loadProfile() {
     state.company = c.data || null;
     state.sub = s.data || null;
     await reloadPerms();
+    const me = await sb.from('employees').select('id').eq('user_id', uid).maybeSingle();
+    state.employeeId = me.data?.id || null;
   }
 }
 
@@ -635,6 +636,9 @@ async function render() {
     if (r === 'settings') return pages.viewSettings();
     if (r === 'employees') return employees.viewEmployees(query().get('edit'));
     if (r === 'leave') return leave.viewLeave(query().get('tab'));
+    if (r === 'products') return reports.viewProducts();
+    if (r === 'attendance') return reports.viewAttendance(query().get('tab'));
+    if (r === 'closings') return reports.viewClosings(query().get('tab'));
     if (r === 'payroll') return payroll.viewPayroll(query().get('tab'), query().get('month'));
     return viewComing(r);
   } catch (err) {
@@ -649,6 +653,7 @@ async function render() {
 const pages = initSetupPages({ sb, state, shell, topbar, bindShell, esc, busy, friendlyError, can, reloadPerms });
 const employees = initEmployeesPage({ sb, state, shell, bindShell, esc, busy, friendlyError, today, can });
 const leave = initLeavePage({ sb, state, shell, bindShell, esc, busy, friendlyError, today, can });
+const reports = initReportPages({ sb, state, shell, bindShell, esc, busy, friendlyError, today, can });
 const payroll = initPayrollPage({ sb, state, shell, bindShell, esc, busy, friendlyError, today, can });
 
 window.addEventListener('hashchange', (e) => {
