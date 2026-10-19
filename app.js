@@ -1,9 +1,11 @@
 // =============================================================
-//  Veltrio admin panel - Part 7.1
-//  Login, company signup, company setup, dashboard, super admin overview
+//  Veltrio admin panel
+//  7.1 Login, company signup, company setup, dashboard, super admin overview
+//  7.2 Branches and settings (see setup-pages.js)
 // =============================================================
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 import { SUPABASE_URL, SUPABASE_KEY, TIME_ZONE } from './config.js';
+import { initSetupPages } from './setup-pages.js';
 
 const app = document.getElementById('app');
 const configured = SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE_');
@@ -20,6 +22,7 @@ const money = (n) => 'Rs ' + new Intl.NumberFormat('en-PK', { maximumFractionDig
 const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: TIME_ZONE }).format(new Date());
 const daysLeft = (end) => Math.round((Date.parse(end) - Date.parse(today())) / 86400000);
 const route = () => (location.hash.replace(/^#\/?/, '') || 'dashboard').split('?')[0];
+const query = () => new URLSearchParams(location.hash.split('?')[1] || '');
 const go = (r) => { if (route() === r) render(); else location.hash = '#/' + r; };
 
 const ROLE_NAMES = {
@@ -76,12 +79,10 @@ const ADMIN_NAV = [
   ['dashboard', 'Overview'], ['companies', 'Companies'], ['payments', 'Payments'], ['plans', 'Plans'],
 ];
 const COMING = {
-  branches: ['Branches', 'Add your shops with their location on the map and check-in radius.', '7.2'],
   employees: ['Employees', 'Add staff, set salary and commission, and create their app login.', '7.3'],
   products: ['Products', 'Add products and prices that employees pick in their daily closing.', '7.4'],
   attendance: ['Attendance', 'See who checked in today, who is late and who is absent.', '7.5'],
   closings: ['Sales closing', 'Daily closings by employee and branch, corrections and Excel export.', '7.6'],
-  settings: ['Settings', 'Company details, shifts, check-in radius and price-editing rules.', '7.2'],
   companies: ['Companies', 'All companies on Veltrio, their plan, status and usage.', '7.7'],
   payments: ['Payments', 'Approve bank transfer, JazzCash and Easypaisa payments.', '7.7'],
   plans: ['Plans', 'Set prices and limits for Starter, Business and Enterprise.', '7.7'],
@@ -493,6 +494,8 @@ async function render() {
     if (r === 'login' || r === 'signup' || !allowed.includes(r)) { location.hash = '#/dashboard'; return; }
 
     if (r === 'dashboard') return isSuper ? viewSuperDashboard() : viewCompanyDashboard();
+    if (r === 'branches') return pages.viewBranches(query().get('edit'));
+    if (r === 'settings') return pages.viewSettings();
     return viewComing(r);
   } catch (err) {
     console.error(err);
@@ -503,7 +506,18 @@ async function render() {
   }
 }
 
-window.addEventListener('hashchange', render);
+const pages = initSetupPages({ sb, state, shell, topbar, bindShell, esc, busy, friendlyError });
+
+window.addEventListener('hashchange', (e) => {
+  // In-page section links (#s-shifts) on the settings page are not routes
+  if (/^#s-/.test(location.hash)) {
+    const el = document.getElementById(location.hash.slice(1));
+    history.replaceState(null, '', e.oldURL);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return;
+  }
+  render();
+});
 
 if (configured) {
   const { data } = await sb.auth.getSession();
