@@ -483,21 +483,22 @@ export function initSetupPages(ctx) {
         </form>` : '<p class="note">Run the Part 7.4 database update to turn on permissions.</p>'}
       </section>
 
-      <section class="panel" id="s-plan">
-        <h2>Plan</h2>
-        ${sub ? `
-        <dl class="facts">
-          <div><dt>Current plan</dt><dd>${esc(plan?.name || '')}</dd></div>
-          <div><dt>Status</dt><dd>${sub.status === 'trial' ? 'Free trial' : esc(sub.status[0].toUpperCase() + sub.status.slice(1))}</dd></div>
-          <div><dt>${sub.status === 'trial' ? 'Trial ends' : 'Renews on'}</dt><dd>${fmtDate(sub.end_date)}</dd></div>
-          <div><dt>Limits</dt><dd>${plan?.max_branches ? `${plan.max_branches} branches, ${plan.max_employees} employees` : 'Unlimited branches and employees'}</dd></div>
-        </dl>
-        <p class="note">To upgrade or pay, contact Veltrio. Online payment arrives in a later update.</p>` : '<p class="sub">No plan found for this company. Contact Veltrio.</p>'}
-      </section>
+      <div id="billing"><section class="panel" id="s-plan"><h2>Plan and payments</h2><p class="sub">Loading…</p></section></div>
 
       <dialog id="dlg" class="dlg"></dialog>`);
 
-    // Section links scroll inside the page instead of changing the route
+    // Plan and payments (Part 9)
+    if (ctx.billing) {
+      ctx.billing.billingPanel().then((html) => {
+        const box = document.getElementById('billing');
+        if (!box) return;
+        box.innerHTML = html;
+        ctx.billing.bindBilling(async () => { await ctx.reloadProfile?.(); reloadAt('s-plan'); });
+        if (location.hash.includes('pay=1')) document.getElementById('s-plan')?.scrollIntoView({ block: 'start' });
+      });
+    }
+
+        // Section links scroll inside the page instead of changing the route
     document.querySelectorAll('.subnav a').forEach((a) => a.addEventListener('click', (e) => {
       e.preventDefault();
       document.getElementById(a.getAttribute('href').slice(1))?.scrollIntoView({ behavior: 'smooth', block: 'start' });

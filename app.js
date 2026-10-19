@@ -7,6 +7,7 @@
 //  7.5 Leave: requests, approvals, balances, rules (see leave-page.js)
 //  7.6 Payroll: payslips, advances, payroll rules (see payroll-page.js)
 //  7.7 Products, attendance and sales closing reports (see reports-pages.js)
+//  9   Veltrio admin: companies, payments, plans; company billing (see admin-pages.js)
 // =============================================================
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 import { SUPABASE_URL, SUPABASE_KEY, TIME_ZONE } from './config.js';
@@ -15,6 +16,7 @@ import { initEmployeesPage } from './employees-page.js';
 import { initLeavePage } from './leave-page.js';
 import { initPayrollPage } from './payroll-page.js';
 import { initReportPages } from './reports-pages.js';
+import { initAdminPages } from './admin-pages.js';
 
 // Staff log in with "<company code>-<employee code>", e.g. BV7K2-E01.
 // It maps to the hidden login email the staff-login function creates.
@@ -133,7 +135,7 @@ async function loadProfile() {
   if (data && data.company_id) {
     const [c, s] = await Promise.all([
       sb.from('companies').select('id, name, email, status').eq('id', data.company_id).maybeSingle(),
-      sb.from('subscriptions').select('status, end_date, billing_cycle, plans(name, max_branches, max_employees)')
+      sb.from('subscriptions').select('plan_id, status, end_date, billing_cycle, plans(name, max_branches, max_employees)')
         .eq('company_id', data.company_id).order('end_date', { ascending: false }).limit(1).maybeSingle(),
     ]);
     state.company = c.data || null;
@@ -448,8 +450,17 @@ function shell(current, inner) {
         <button id="out" type="button">Log out</button>
       </div>
     </aside>
-    <main class="main" id="main">${inner}</main>
+    <div class="maincol">${planBanner(isSuper, current)}<main class="main" id="main">${inner}</main></div>
   </div>`;
+}
+
+// Plan ended or company suspended: tell the company admin on every page
+function planBanner(isSuper, current) {
+  if (isSuper || !state.sub) return '';
+  const ended = state.company?.status === 'suspended' || state.company?.status === 'expired' || state.sub.end_date < today();
+  if (!ended) return '';
+  const why = state.company?.status === 'suspended' ? 'Your company is suspended by Veltrio.' : 'Your plan has ended.';
+  return `<div class="banner bad"><span>${why} Staff cannot use the app until it is renewed.</span>${current === 'settings' ? '' : '<a class="btn btn-sm" href="#/settings?pay=1">Renew plan</a>'}</div>`;
 }
 
 function bindShell() {
@@ -536,45 +547,6 @@ async function viewCompanyDashboard() {
 }
 
 // ---------------------------------------------------------------
-// Super admin overview
-// ---------------------------------------------------------------
-async function viewSuperDashboard() {
-  app.innerHTML = shell('dashboard', topbar('Overview', 'All companies on Veltrio.') + '<div class="panel"><p class="sub">Loading…</p></div>');
-  bindShell();
-
-  const { data, error } = await sb.from('companies')
-    .select('id, name, email, status, created_at').order('created_at', { ascending: false });
-  if (error) {
-    document.getElementById('main').innerHTML = topbar('Overview') + `<div class="alert alert-error" role="alert">${esc(friendlyError(error))}</div>`;
-    return bindShell();
-  }
-  const by = (s) => data.filter((c) => c.status === s).length;
-  const fmt = (d) => new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(d));
-
-  document.getElementById('main').innerHTML = `
-    ${topbar('Overview', 'All companies on Veltrio.')}
-    <section class="stats" aria-label="Companies">
-      <div class="stat"><div class="label">Companies</div><div class="value">${data.length}</div></div>
-      <div class="stat"><div class="label">Paying</div><div class="value">${by('active')}</div></div>
-      <div class="stat"><div class="label">On free trial</div><div class="value">${by('trial')}</div></div>
-      <div class="stat"><div class="label">Suspended or expired</div><div class="value">${by('suspended') + by('expired')}</div></div>
-    </section>
-    <section class="panel">
-      <h2>Latest signups</h2>
-      ${data.length ? `
-      <div class="table-wrap"><table>
-        <thead><tr><th>Company</th><th>Email</th><th>Status</th><th>Joined</th></tr></thead>
-        <tbody>${data.slice(0, 20).map((c) => `
-          <tr><td><b>${esc(c.name)}</b></td><td>${esc(c.email)}</td>
-          <td><span class="pill pill-${esc(c.status)}">${esc(c.status[0].toUpperCase() + c.status.slice(1))}</span></td>
-          <td class="num">${fmt(c.created_at)}</td></tr>`).join('')}
-        </tbody></table></div>` : `
-      <div class="empty"><h2>No companies yet</h2><p>When a company signs up for a free trial, it shows up here.</p></div>`}
-    </section>`;
-  bindShell();
-}
-
-// ---------------------------------------------------------------
 // Pages that arrive in later parts
 // ---------------------------------------------------------------
 function viewComing(key) {
@@ -631,7 +603,10 @@ async function render() {
     const allowed = (isSuper ? ADMIN_NAV : COMPANY_NAV).map((n) => n[0]);
     if (r === 'login' || r === 'signup' || r === 'forgot' || !allowed.includes(r)) { location.hash = '#/dashboard'; return; }
 
-    if (r === 'dashboard') return isSuper ? viewSuperDashboard() : viewCompanyDashboard();
+    if (r === 'dashboard') return isSuper ? admin.viewOverview() : viewCompanyDashboard();
+    if (isSuper && r === 'companies') return admin.viewCompanies();
+    if (isSuper && r === 'payments') return admin.viewPayments();
+    if (isSuper && r === 'plans') return admin.viewPlans();
     if (r === 'branches') return pages.viewBranches(query().get('edit'));
     if (r === 'settings') return pages.viewSettings();
     if (r === 'employees') return employees.viewEmployees(query().get('edit'));
@@ -650,7 +625,8 @@ async function render() {
   }
 }
 
-const pages = initSetupPages({ sb, state, shell, topbar, bindShell, esc, busy, friendlyError, can, reloadPerms });
+const admin = initAdminPages({ sb, state, shell, bindShell, esc, busy, friendlyError, today });
+const pages = initSetupPages({ sb, state, shell, topbar, bindShell, esc, busy, friendlyError, can, reloadPerms, billing: admin, reloadProfile: () => loadProfile() });
 const employees = initEmployeesPage({ sb, state, shell, bindShell, esc, busy, friendlyError, today, can });
 const leave = initLeavePage({ sb, state, shell, bindShell, esc, busy, friendlyError, today, can });
 const reports = initReportPages({ sb, state, shell, bindShell, esc, busy, friendlyError, today, can });

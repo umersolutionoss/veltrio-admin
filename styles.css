@@ -406,3 +406,20 @@ textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--line); borde
 .visits span { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
 .visits .thumb { width: 30px; height: 38px; }
 .selfie-big { display: block; width: 100%; max-height: 70vh; object-fit: contain; border-radius: var(--radius-sm); background: #000; }
+
+/* =============== Part 9: Veltrio admin and billing =============== */
+.banner.bad { background: var(--bad-soft); color: var(--bad); }
+.banner .btn-sm { background: var(--bad); }
+.bars { display: flex; align-items: flex-end; gap: 14px; height: 170px; padding-top: 18px; }
+.bar { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 4px; }
+.bar .bf { width: 100%; max-width: 46px; background: var(--brand-2); border-radius: 6px 6px 0 0; }
+.bar .bv { font-size: 12px; font-weight: 700; color: var(--muted); font-variant-numeric: tabular-nums; }
+.bar .bl { font-size: 12px; color: var(--muted); }
+.proof { display: block; max-width: 100%; max-height: 50vh; margin: 8px 0 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.pay-how { background: var(--brand-soft); border-radius: var(--radius-sm); padding: 12px 16px; margin: 6px 0 16px; }
+.pay-how p { margin: 6px 0; }
+.quick { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+input[type=file] { font-size: 14px; }
+.maincol { min-width: 0; }
+.maincol > .banner { margin: 20px 32px 0; }
+@media (max-width: 860px) { .maincol > .banner { margin: 14px 16px 0; } }
