@@ -8,10 +8,19 @@ import { SUPABASE_URL, SUPABASE_KEY, TIME_ZONE } from './config.js';
 import { initSetupPages } from './setup-pages.js';
 
 const app = document.getElementById('app');
+
+// Captured before Supabase reads (and clears) the link a reset email opens
+const START = new URL(location.href);
+const START_HASH = new URLSearchParams(START.hash.replace(/^#\/?/, ''));
+const LINK_ERROR = START_HASH.get('error_description') || START.searchParams.get('error_description');
 const configured = SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE_');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 
-const state = { session: null, profile: undefined, company: null, sub: null, signingUp: false };
+const state = {
+  session: null, profile: undefined, company: null, sub: null, signingUp: false,
+  // true while the person is setting a new password from the reset email
+  recovery: START.searchParams.get('reset') === '1' || START_HASH.get('type') === 'recovery',
+};
 
 // ---------------------------------------------------------------
 // Small helpers
@@ -36,6 +45,9 @@ function friendlyError(err) {
   if (/Email not confirmed/i.test(m)) return 'Please confirm your email first. Check your inbox for the link from Veltrio.';
   if (/already registered|already been registered/i.test(m)) return 'An account with this email already exists. Log in instead.';
   if (/Password should be at least/i.test(m)) return 'Password must be at least 8 characters.';
+  if (/rate limit|too many/i.test(m)) return 'Too many emails were sent. Wait an hour and try again, or contact Veltrio support.';
+  if (/not authorized/i.test(m)) return 'Email could not be sent to this address. Contact Veltrio support to reset your password.';
+  if (/should be different/i.test(m)) return 'Choose a password different from your old one.';
   if (/Failed to fetch|NetworkError/i.test(m)) return 'Could not reach the server. Check your internet connection and try again.';
   return m;
 }
@@ -160,7 +172,10 @@ function viewLogin() {
     <form id="f" novalidate>
       ${notice ? `<div class="alert alert-ok" role="status">${esc(notice)}</div>` : ''}
       <div class="field"><label for="email">Email</label><input id="email" type="email" autocomplete="email" required></div>
-      <div class="field"><label for="pw">Password</label><input id="pw" type="password" autocomplete="current-password" required></div>
+      <div class="field">
+        <div class="label-row"><label for="pw">Password</label><a href="#/forgot">Forgot password?</a></div>
+        <input id="pw" type="password" autocomplete="current-password" required>
+      </div>
       <button class="btn btn-block" type="submit">Log in</button>
     </form>
     <p class="auth-switch">New company? <a href="#/signup">Start a free trial</a></p>`);
@@ -177,6 +192,67 @@ function viewLogin() {
     if (error) showAlert(f, friendlyError(error));
     // success: auth listener re-renders
   });
+}
+
+function viewForgot() {
+  app.innerHTML = authLayout(`
+    <h2>Reset your password</h2>
+    <p class="sub">Enter the email you log in with. We will send you a link to set a new password.</p>
+    <form id="f" novalidate>
+      <div class="field"><label for="email">Email</label><input id="email" type="email" autocomplete="email" required></div>
+      <button class="btn btn-block" type="submit">Send reset link</button>
+    </form>
+    <p class="auth-switch"><a href="#/login">Back to log in</a></p>`);
+
+  const f = document.getElementById('f');
+  f.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const email = f.email.value.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return showAlert(f, 'Enter a valid email address.');
+    const btn = f.querySelector('button');
+    busy(btn, true, 'Sending…');
+    const { error } = await sb.auth.resetPasswordForEmail(email, {
+      redirectTo: location.origin + location.pathname + '?reset=1',
+    });
+    busy(btn, false);
+    if (error) return showAlert(f, friendlyError(error));
+    f.innerHTML = `<div class="alert alert-ok" role="status">If ${esc(email)} has a Veltrio account, a reset link is on its way. Open the email and click the link. Check your spam folder too.</div>`;
+  });
+}
+
+function viewResetPassword() {
+  app.innerHTML = authLayout(`
+    <h2>Set a new password</h2>
+    <p class="sub">Choose a new password for ${esc(state.session.user.email)}.</p>
+    <form id="f" novalidate>
+      <div class="field"><label for="pw">New password</label><input id="pw" type="password" autocomplete="new-password" minlength="8" required><span class="hint">At least 8 characters.</span></div>
+      <div class="field"><label for="pw2">Type it again</label><input id="pw2" type="password" autocomplete="new-password" required></div>
+      <button class="btn btn-block" type="submit">Save new password</button>
+    </form>`);
+
+  const f = document.getElementById('f');
+  f.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const pw = f.pw.value, pw2 = f.pw2.value;
+    if (pw.length < 8) return showAlert(f, 'Password must be at least 8 characters.');
+    if (pw !== pw2) return showAlert(f, 'The two passwords do not match.');
+    const btn = f.querySelector('button');
+    busy(btn, true, 'Saving…');
+    const { error } = await sb.auth.updateUser({ password: pw });
+    busy(btn, false);
+    if (error) return showAlert(f, friendlyError(error));
+    state.recovery = false;
+    history.replaceState(null, '', location.pathname + '#/dashboard');
+    render();
+  });
+}
+
+function viewLinkProblem(message) {
+  app.innerHTML = authLayout(`
+    <h2>This link does not work</h2>
+    <p class="sub">${esc(message)}</p>
+    <a class="btn btn-block" href="#/forgot">Send a new reset link</a>
+    <p class="auth-switch"><a href="#/login">Back to log in</a></p>`);
 }
 
 async function viewSignup() {
@@ -478,9 +554,26 @@ async function render() {
     if (!configured) return viewNotConfigured();
     const r = route();
 
+    if (state.recovery) {
+      if (state.session) return viewResetPassword();
+      state.recovery = false;
+      state.linkErrorShown = true;
+      history.replaceState(null, '', location.pathname + '#/login');
+      return viewLinkProblem(/expired|invalid/i.test(LINK_ERROR || 'expired')
+        ? 'The reset link has expired or was already used. Links work once and only for a short time.'
+        : LINK_ERROR);
+    }
+    if (LINK_ERROR && !state.linkErrorShown) {
+      state.linkErrorShown = true;
+      history.replaceState(null, '', location.pathname + '#/login');
+      if (!state.session) return viewLinkProblem('The link from your email has expired or was already used.');
+    }
+
     if (!state.session) {
       state.profile = undefined;
-      return r === 'signup' ? viewSignup() : viewLogin();
+      if (r === 'signup') return viewSignup();
+      if (r === 'forgot') return viewForgot();
+      return viewLogin();
     }
     if (state.profile === undefined) await loadProfile();
 
@@ -491,7 +584,7 @@ async function render() {
 
     const isSuper = p.role === 'super_admin';
     const allowed = (isSuper ? ADMIN_NAV : COMPANY_NAV).map((n) => n[0]);
-    if (r === 'login' || r === 'signup' || !allowed.includes(r)) { location.hash = '#/dashboard'; return; }
+    if (r === 'login' || r === 'signup' || r === 'forgot' || !allowed.includes(r)) { location.hash = '#/dashboard'; return; }
 
     if (r === 'dashboard') return isSuper ? viewSuperDashboard() : viewCompanyDashboard();
     if (r === 'branches') return pages.viewBranches(query().get('edit'));
@@ -525,6 +618,7 @@ if (configured) {
   sb.auth.onAuthStateChange((event, session) => {
     const changedUser = (session?.user?.id || null) !== (state.session?.user?.id || null);
     state.session = session;
+    if (event === 'PASSWORD_RECOVERY') { state.recovery = true; return render(); }
     if (state.signingUp) return;
     if (changedUser || event === 'SIGNED_OUT') {
       state.profile = undefined;

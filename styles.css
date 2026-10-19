@@ -286,3 +286,7 @@ fieldset[disabled] .form-end { display: none; }
   .row-3 .field:last-child { grid-column: 1 / -1; }
   .map { height: 300px; }
 }
+
+/* Forgot password */
+.label-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.label-row a { font-size: 14px; font-weight: 600; }
