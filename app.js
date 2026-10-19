@@ -1,685 +1,618 @@
 // =============================================================
-//  Veltrio admin panel
-//  7.1 Login, company signup, company setup, dashboard, super admin overview
-//  7.2 Branches and settings (see setup-pages.js)
-//  7.3 Employees and staff app logins (see employees-page.js)
-//  7.4 Per-company permissions for HR and branch managers
-//  7.5 Leave: requests, approvals, balances, rules (see leave-page.js)
-//  7.6 Payroll: payslips, advances, payroll rules (see payroll-page.js)
-//  7.7 Products, attendance and sales closing reports (see reports-pages.js)
+//  Veltrio Staff app (Part 8)
+//  Check in / out with GPS and selfie, store visits, daily closing,
+//  closing corrections, leave, payslips. Installable web app.
 // =============================================================
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_KEY, TIME_ZONE } from './config.js';
-import { initSetupPages } from './setup-pages.js';
-import { initEmployeesPage } from './employees-page.js';
-import { initLeavePage } from './leave-page.js';
-import { initPayrollPage } from './payroll-page.js';
-import { initReportPages } from './reports-pages.js';
+import { SUPABASE_URL, SUPABASE_KEY } from '../config.js';
 
-// Staff log in with "<company code>-<employee code>", e.g. BV7K2-E01.
-// It maps to the hidden login email the staff-login function creates.
+const sb = createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { storageKey: 'veltrio-staff' } });
+const app = document.getElementById('app');
+const S = { session: null, me: null, profile: null, settings: {}, branches: [], duties: [], products: [] };
+
+// ---------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const money = (n) => new Intl.NumberFormat('en-PK', { maximumFractionDigits: 0 }).format(Math.round(Number(n) || 0));
+const nd = (n) => (Number(n) % 1 ? Number(n).toFixed(1) : String(Number(n || 0)));
+const tz = () => S.settings.timezone || 'Asia/Karachi';
+const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: tz() }).format(new Date());
+const clock = (ts) => (ts ? new Intl.DateTimeFormat('en-GB', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: tz() }).format(new Date(ts)) : '–');
+const dayLabel = (d, opt = { weekday: 'short', day: 'numeric', month: 'short' }) => new Intl.DateTimeFormat('en-GB', opt).format(new Date(d + 'T00:00:00'));
+const route = () => (location.hash.replace(/^#\/?/, '') || 'home').split('?')[0];
 const STAFF_DOMAIN = 'staff.veltrio.app';
 const slug = (s) => String(s || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-function loginEmail(input) {
-  const v = String(input || '').trim();
-  if (v.includes('@')) return v;
-  const i = v.indexOf('-');
-  if (i < 1) return v;
-  return `${slug(v.slice(i + 1))}.${slug(v.slice(0, i))}@${STAFF_DOMAIN}`;
+const loginEmail = (v) => { v = String(v || '').trim(); if (v.includes('@')) return v; const i = v.indexOf('-'); return i < 1 ? v : `${slug(v.slice(i + 1))}.${slug(v.slice(0, i))}@${STAFF_DOMAIN}`; };
+
+function deviceId() {
+  let id = null;
+  try { id = localStorage.getItem('veltrio_device'); } catch { /* storage blocked */ }
+  if (!id) { id = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()); try { localStorage.setItem('veltrio_device', id); } catch { /* ignore */ } }
+  return id;
 }
-
-const app = document.getElementById('app');
-
-// Captured before Supabase reads (and clears) the link a reset email opens
-const START = new URL(location.href);
-const START_HASH = new URLSearchParams(START.hash.replace(/^#\/?/, ''));
-const LINK_ERROR = START_HASH.get('error_description') || START.searchParams.get('error_description');
-const configured = SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE_');
-const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
-
-const state = {
-  session: null, profile: undefined, company: null, sub: null, signingUp: false,
-  // true while the person is setting a new password from the reset email
-  recovery: START.searchParams.get('reset') === '1' || START_HASH.get('type') === 'recovery',
-};
-
-// ---------------------------------------------------------------
-// Small helpers
-// ---------------------------------------------------------------
-const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) =>
-  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const money = (n) => 'Rs ' + new Intl.NumberFormat('en-PK', { maximumFractionDigits: 0 }).format(Number(n) || 0);
-const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: TIME_ZONE }).format(new Date());
-const daysLeft = (end) => Math.round((Date.parse(end) - Date.parse(today())) / 86400000);
-const route = () => (location.hash.replace(/^#\/?/, '') || 'dashboard').split('?')[0];
-const query = () => new URLSearchParams(location.hash.split('?')[1] || '');
-const go = (r) => { if (route() === r) render(); else location.hash = '#/' + r; };
-
-const ROLE_NAMES = {
-  super_admin: 'Veltrio admin', company_admin: 'Company admin',
-  hr: 'HR', branch_manager: 'Branch manager', employee: 'Employee',
-};
-
-function friendlyError(err) {
-  const m = (err && (err.message || err.error_description)) || String(err);
-  if (/Invalid login credentials/i.test(m)) return 'Email, Staff ID or password is incorrect.';
-  if (/banned/i.test(m)) return 'This login is turned off. Ask your company admin or HR.';
-  if (/Email not confirmed/i.test(m)) return 'Please confirm your email first. Check your inbox for the link from Veltrio.';
-  if (/already registered|already been registered/i.test(m)) return 'An account with this email already exists. Log in instead.';
-  if (/Password should be at least/i.test(m)) return 'Password must be at least 8 characters.';
-  if (/rate limit|too many/i.test(m)) return 'Too many emails were sent. Wait an hour and try again, or contact Veltrio support.';
-  if (/not authorized/i.test(m)) return 'Email could not be sent to this address. Contact Veltrio support to reset your password.';
-  if (/should be different/i.test(m)) return 'Choose a password different from your old one.';
-  if (/Failed to fetch|NetworkError/i.test(m)) return 'Could not reach the server. Check your internet connection and try again.';
+function errText(e) {
+  const m = (e && (e.message || e.error_description)) || String(e);
+  if (/Invalid login credentials/i.test(m)) return 'Staff ID or password is wrong.';
+  if (/banned/i.test(m)) return 'Your login is turned off. Please contact HR.';
+  if (/Failed to fetch|NetworkError|network/i.test(m)) return 'No internet. Check your connection and try again.';
+  if (/JWT|session/i.test(m)) return 'Please log in again.';
   return m;
 }
-
-function showAlert(form, msg, kind = 'error') {
-  let box = form.querySelector('.alert');
-  if (!box) { box = document.createElement('div'); form.prepend(box); }
-  box.className = 'alert alert-' + kind;
-  box.setAttribute('role', kind === 'error' ? 'alert' : 'status');
-  box.textContent = msg;
+function toast(t, bad) {
+  let el = document.getElementById('toast');
+  if (!el) { el = document.createElement('div'); el.id = 'toast'; el.setAttribute('role', 'status'); document.body.appendChild(el); }
+  el.className = 'toast' + (bad ? ' bad' : ''); el.textContent = t;
+  clearTimeout(el._h); el._h = setTimeout(() => el.classList.add('hide'), 3500);
 }
-
-function busy(btn, on, label) {
-  btn.disabled = on;
-  if (on) { btn.dataset.label = btn.textContent; btn.textContent = label; }
-  else if (btn.dataset.label) btn.textContent = btn.dataset.label;
+function alertIn(el, text, kind = 'error') {
+  let box = el.querySelector(':scope > .alert');
+  if (!box) { box = document.createElement('div'); el.prepend(box); }
+  box.className = 'alert ' + kind; box.setAttribute('role', kind === 'error' ? 'alert' : 'status'); box.textContent = text;
+  box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
-
-const LOGO = `<svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#0B4F55"/><rect x="1" y="1" width="30" height="30" rx="7" fill="none" stroke="rgba(255,255,255,.18)"/><path d="M9 10l7 13 7-13" fill="none" stroke="#F2B84B" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-
-const ICONS = {
-  dashboard: '<path d="M3 13h8V3H3zM13 21h8V11h-8zM3 21h8v-6H3zM13 3v6h8V3z"/>',
-  branches: '<path d="M3 21h18M5 21V8l7-5 7 5v13M9 21v-6h6v6"/>',
-  employees: '<circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3-6 7-6s7 2 7 6M17 11a3 3 0 1 0 0-6M22 21c0-3-2-5-4-5.5"/>',
-  products: '<path d="M21 8l-9-5-9 5 9 5 9-5zM3 8v8l9 5 9-5V8M12 13v8"/>',
-  attendance: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
-  payroll: '<rect x="2" y="6" width="20" height="13" rx="2"/><circle cx="12" cy="12.5" r="2.5"/><path d="M6 6V4h12v2M5.5 12.5h.01M18.5 12.5h.01"/>',
-  leave: '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4M9 15l2 2 4-4"/>',
-  closings: '<path d="M6 2h12v20l-3-2-3 2-3-2-3 2zM9 7h6M9 11h6M9 15h4"/>',
-  settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
-  companies: '<path d="M3 21h18M6 21V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v16M10 7h4M10 11h4M10 15h4"/>',
-  payments: '<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20M6 15h4"/>',
-  plans: '<path d="M4 7h16M4 12h16M4 17h10"/>',
+function busy(btn, on, label) { btn.disabled = on; if (on) { btn.dataset.l = btn.textContent; btn.textContent = label; } else if (btn.dataset.l) btn.textContent = btn.dataset.l; }
+function distance(a, b, c, d) {
+  const R = 6371000, r = (x) => (x * Math.PI) / 180;
+  const h = Math.sin(r(c - a) / 2) ** 2 + Math.cos(r(a)) * Math.cos(r(c)) * Math.sin(r(d - b) / 2) ** 2;
+  return Math.round(2 * R * Math.asin(Math.sqrt(h)));
+}
+const LOGO = `<svg viewBox="0 0 32 32" class="mark" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#13737B"/><path d="M9 10l7 13 7-13" fill="none" stroke="#F2B84B" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const ICON = {
+  home: '<path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
+  closing: '<path d="M6 2h12v20l-3-2-3 2-3-2-3 2zM9 7h6M9 11h6M9 15h4"/>',
+  leave: '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/>',
+  me: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/>',
 };
-const icon = (k) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[k] || ''}</svg>`;
+const icon = (k) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[k]}</svg>`;
 
-const COMPANY_NAV = [
-  ['dashboard', 'Dashboard'], ['branches', 'Branches'], ['employees', 'Employees'],
-  ['products', 'Products'], ['attendance', 'Attendance'], ['leave', 'Leave'], ['payroll', 'Payroll'], ['closings', 'Sales closing'],
-  ['settings', 'Settings'],
-];
-const ADMIN_NAV = [
-  ['dashboard', 'Overview'], ['companies', 'Companies'], ['payments', 'Payments'], ['plans', 'Plans'],
-];
-const COMING = {
-  companies: ['Companies', 'All companies on Veltrio, their plan, status and usage.', '7.7'],
-  payments: ['Payments', 'Approve bank transfer, JazzCash and Easypaisa payments.', '7.7'],
-  plans: ['Plans', 'Set prices and limits for Starter, Business and Enterprise.', '7.7'],
-};
+function frame(tab, inner) {
+  app.innerHTML = `<main class="screen">${inner}</main>
+    <nav class="nav" aria-label="Main">${[['home', 'Home'], ['closing', 'Closing'], ['leave', 'Leave'], ['me', 'Me']].map(([k, l]) =>
+      `<a href="#/${k}" class="${k === tab ? 'on' : ''}" ${k === tab ? 'aria-current="page"' : ''}>${icon(k)}${l}</a>`).join('')}</nav>`;
+}
 
 // ---------------------------------------------------------------
-// Data loading
+// login
 // ---------------------------------------------------------------
-async function loadProfile() {
-  const uid = state.session.user.id;
-  const { data, error } = await sb.from('users_profile')
-    .select('id, role, full_name, company_id, is_active').eq('id', uid).maybeSingle();
-  if (error) throw error;
-  state.profile = data || null;
-  state.company = null; state.sub = null;
-  if (data && data.company_id) {
-    const [c, s] = await Promise.all([
-      sb.from('companies').select('id, name, email, status').eq('id', data.company_id).maybeSingle(),
-      sb.from('subscriptions').select('status, end_date, billing_cycle, plans(name, max_branches, max_employees)')
-        .eq('company_id', data.company_id).order('end_date', { ascending: false }).limit(1).maybeSingle(),
-    ]);
-    state.company = c.data || null;
-    state.sub = s.data || null;
-    await reloadPerms();
-    const me = await sb.from('employees').select('id').eq('user_id', uid).maybeSingle();
-    state.employeeId = me.data?.id || null;
-  }
+function viewLogin(note) {
+  app.innerHTML = `<div class="login">
+    <div class="login-top">${LOGO}<h1>Veltrio Staff</h1><p>Check in, submit your closing and see your leave and pay.</p></div>
+    <form id="f" novalidate>
+      ${note ? `<div class="alert info" role="status">${esc(note)}</div>` : ''}
+      <div class="field"><label for="sid">Staff ID</label><input id="sid" autocomplete="username" autocapitalize="characters" placeholder="BV7K2-E01"></div>
+      <div class="field"><label for="pw">Password</label><input id="pw" type="password" autocomplete="current-password"></div>
+      <button class="btn" type="submit">Log in</button>
+      <p class="hint" style="margin-top:16px">Your Staff ID and password come from your HR. Forgot your password? Ask HR to set a new one.</p>
+    </form></div>`;
+  const f = document.getElementById('f');
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const sid = f.sid.value.trim(), pw = f.pw.value;
+    if (!sid || !pw) return alertIn(f, 'Enter your Staff ID and password.');
+    const btn = f.querySelector('button'); busy(btn, true, 'Logging in…');
+    const { error } = await sb.auth.signInWithPassword({ email: loginEmail(sid), password: pw });
+    busy(btn, false);
+    if (error) return alertIn(f, errText(error));
+    await boot();
+  };
 }
 
-// What HR and branch managers may do in this company (company admin: everything)
-async function reloadPerms() {
-  const p = state.profile;
-  state.perms = new Set();
-  if (!p || !['hr', 'branch_manager'].includes(p.role)) return;
-  const [d, o] = await Promise.all([
-    sb.from('permission_defs').select('key, hr_default, manager_default'),
-    sb.from('role_permissions').select('permission, allowed').eq('company_id', p.company_id).eq('role', p.role),
+// ---------------------------------------------------------------
+// data
+// ---------------------------------------------------------------
+async function loadBase() {
+  const uid = S.session.user.id;
+  const [p, e] = await Promise.all([
+    sb.from('users_profile').select('id, role, full_name, company_id, is_active').eq('id', uid).maybeSingle(),
+    sb.from('employees').select('*').eq('user_id', uid).maybeSingle(),
   ]);
-  for (const def of d.data || []) {
-    const ov = (o.data || []).find((x) => x.permission === def.key);
-    const on = ov ? ov.allowed : (p.role === 'hr' ? def.hr_default : def.manager_default);
-    if (on) state.perms.add(def.key);
+  S.profile = p.data; S.me = e.data;
+  if (!S.me) return;
+  const [s, b, d, pr] = await Promise.all([
+    sb.from('company_settings').select('*').eq('company_id', S.me.company_id).maybeSingle(),
+    sb.from('branches').select('id, name, latitude, longitude, geofence_radius_m, is_active').eq('company_id', S.me.company_id),
+    sb.from('employee_branch_assignments').select('branch_id, start_date, end_date').eq('employee_id', S.me.id),
+    sb.from('products').select('id, name, sku, default_price').eq('company_id', S.me.company_id).eq('is_active', true).order('name'),
+  ]);
+  S.settings = s.data || {}; S.branches = b.data || []; S.duties = d.data || []; S.products = pr.data || [];
+}
+
+async function loadToday() {
+  const t = today();
+  const since = new Date(Date.now() - 20 * 3600e3).toISOString();
+  const [att, open, vis, cl] = await Promise.all([
+    sb.from('attendance').select('*').eq('employee_id', S.me.id).eq('attendance_date', t).maybeSingle(),
+    sb.from('attendance').select('*').eq('employee_id', S.me.id).is('check_out_at', null).not('check_in_at', 'is', null).gte('check_in_at', since).order('check_in_at', { ascending: false }).limit(1),
+    sb.from('store_visits').select('*').eq('employee_id', S.me.id).is('check_out_at', null).order('check_in_at', { ascending: false }).limit(1),
+    sb.from('daily_closings').select('*').eq('employee_id', S.me.id).eq('closing_date', t).maybeSingle(),
+  ]);
+  S.att = att.data || null;
+  S.open = (open.data || [])[0] || null;
+  S.visit = (vis.data || [])[0] || null;
+  S.closing = cl.data || null;
+}
+
+// branches this employee may use today, nearest first
+function allowedBranches(lat, lng) {
+  const t = today();
+  const ok = S.branches.filter((b) => b.is_active && b.latitude != null && b.longitude != null && (
+    S.me.work_mode !== 'fixed' || b.id === S.me.home_branch_id ||
+    S.duties.some((d) => d.branch_id === b.id && d.start_date <= t && (!d.end_date || d.end_date >= t))));
+  return ok.map((b) => ({ ...b, dist: distance(lat, lng, Number(b.latitude), Number(b.longitude)), radius: b.geofence_radius_m || S.settings.default_geofence_radius_m || 100 }))
+    .sort((a, b) => a.dist - b.dist);
+}
+const branchName = (id) => S.branches.find((b) => b.id === id)?.name || '';
+
+// ---------------------------------------------------------------
+// HOME
+// ---------------------------------------------------------------
+async function viewHome() {
+  frame('home', '<div class="boot">Loading…</div>');
+  try { await loadToday(); } catch (e) { return frame('home', `<div class="alert error">${esc(errText(e))}</div>`); }
+  const first = S.me.full_name.split(' ')[0];
+  const a = S.open || S.att;
+  const field = S.me.work_mode === 'field';
+  let state, where = '', btns = '';
+  if (!a || !a.check_in_at) {
+    if (a && ['leave', 'holiday', 'absent', 'half_day'].includes(a.status) && !a.check_in_at) {
+      state = a.status === 'leave' ? 'On leave today' : a.status === 'holiday' ? 'Holiday' : a.status === 'half_day' ? 'Half day leave' : 'Marked absent';
+      btns = a.status === 'half_day' ? '<button class="btn" id="in">Check in</button>' : '';
+    } else {
+      state = 'Not checked in'; btns = '<button class="btn" id="in">Check in</button>';
+    }
+  } else if (!a.check_out_at) {
+    state = 'Checked in';
+    where = esc(branchName(a.branch_id));
+    btns = (field ? (S.visit ? '<button class="btn" id="vend">Finish visit</button>' : '<button class="btn" id="vstart">Start store visit</button>') : '') +
+      `<button class="btn ${field ? 'ghost' : ''}" id="out" style="margin-top:10px">Check out</button>`;
+  } else {
+    state = 'Day finished'; where = esc(branchName(a.check_out_branch_id || a.branch_id));
   }
-}
-function can(key) {
-  const r = state.profile?.role;
-  if (r === 'company_admin') return true;
-  if (r === 'hr' || r === 'branch_manager') return !!state.perms?.has(key);
-  return false;
-}
+  const late = a?.status === 'late' && a.late_minutes ? `<span class="tag late">${a.late_minutes} min late</span>` : '';
 
-async function count(table, filter) {
-  let q = sb.from(table).select('id', { count: 'exact', head: true });
-  if (filter) q = filter(q);
-  const { count: n, error } = await q;
-  if (error) throw error;
-  return n || 0;
-}
+  frame('home', `
+    <div class="head"><div><h1>Hello, ${esc(first)}</h1><p>${dayLabel(today(), { weekday: 'long', day: 'numeric', month: 'long' })}</p></div></div>
+    <section class="today" aria-label="Today">
+      <div class="when">Today</div>
+      <div class="state">${state} ${late}</div>
+      ${where ? `<div class="where">${where}</div>` : ''}
+      ${a?.check_in_at ? `<div class="times"><div><span>In</span><b>${clock(a.check_in_at)}</b></div><div><span>Out</span><b>${clock(a.check_out_at)}</b></div></div>` : '<div style="height:16px"></div>'}
+      ${S.visit ? `<p class="where" style="margin:0 0 12px">Visiting <b>${esc(branchName(S.visit.branch_id))}</b> since ${clock(S.visit.check_in_at)}</p>` : ''}
+      ${btns}
+    </section>
+    <section class="card">
+      <h2>Today's closing</h2>
+      ${S.closing ? `<p>Submitted: <b class="amount">Rs ${money(S.closing.total_amount)}</b> ${S.closing.status === 'correction_requested' ? '<span class="tag warn">Correction asked</span>' : ''}</p>`
+        : '<p>Submit your sales at the end of the day.</p><a class="btn ghost" href="#/closing" style="margin-top:12px">Submit closing</a>'}
+    </section>
+    ${S.me.work_mode !== 'fixed' ? `<p class="hint">${field ? 'You are field staff: start a visit at each store you go to.' : 'You can check in at any branch.'}</p>` : ''}`);
 
-// ---------------------------------------------------------------
-// Screens: not configured / login / signup / company setup
-// ---------------------------------------------------------------
-function viewNotConfigured() {
-  app.innerHTML = `
-  <div class="center-page"><div class="center-card">
-    <span class="logo">${LOGO} Veltrio</span>
-    <h2>One setting is missing</h2>
-    <p class="sub">The panel needs your Supabase publishable key before it can connect.</p>
-    <p>Open <code>config.js</code> and paste the key where it says <code>PASTE_YOUR_PUBLISHABLE_KEY_HERE</code>. You will find the key in Supabase under Settings, API Keys.</p>
-  </div></div>`;
-}
-
-function authLayout(inner) {
-  return `
-  <div class="auth">
-    <aside class="auth-brand">
-      <a class="logo" href="#/login">${LOGO} Veltrio</a>
-      <div>
-        <h1>Every shop, every shift, every closing.</h1>
-        <p>Attendance with GPS and selfie, daily sales closing and staff records for all your branches in one place.</p>
-      </div>
-      <div class="ledger" aria-label="Example of a shop day">
-        <div class="ledger-head"><span>Iqbal Town branch</span><span>Today</span></div>
-        <div class="ledger-row"><time>10:52</time><span><b>Ali</b> checked in</span><span class="tag">On time</span></div>
-        <div class="ledger-row"><time>11:14</time><span><b>Sana</b> checked in</span><span class="tag late">14 min late</span></div>
-        <div class="ledger-row"><time>21:05</time><span><b>Ali</b> closing</span><span class="amt">Rs 32,000</span></div>
-        <div class="ledger-row"><time>21:09</time><span><b>Sana</b> closing</span><span class="amt">Rs 18,500</span></div>
-        <div class="ledger-total"><span>Branch total</span><span class="num">Rs 50,500</span></div>
-      </div>
-    </aside>
-    <main class="auth-main"><div class="auth-card">${inner}</div></main>
-  </div>`;
-}
-
-function viewLogin() {
-  const notice = state.notice; state.notice = null;
-  app.innerHTML = authLayout(`
-    <h2>Log in</h2>
-    <p class="sub">Welcome back. Log in to manage your company.</p>
-    <form id="f" novalidate>
-      ${notice ? `<div class="alert alert-ok" role="status">${esc(notice)}</div>` : ''}
-      <div class="field"><label for="email">Email or Staff ID</label><input id="email" autocomplete="username" required><span class="hint">Staff use their Staff ID, for example BV7K2-E01.</span></div>
-      <div class="field">
-        <div class="label-row"><label for="pw">Password</label><a href="#/forgot">Forgot password?</a></div>
-        <input id="pw" type="password" autocomplete="current-password" required>
-      </div>
-      <button class="btn btn-block" type="submit">Log in</button>
-    </form>
-    <p class="auth-switch">New company? <a href="#/signup">Start a free trial</a></p>`);
-
-  const f = document.getElementById('f');
-  f.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const email = loginEmail(f.email.value), password = f.pw.value;
-    if (!email || !password) return showAlert(f, 'Enter your email or Staff ID, and your password.');
-    const btn = f.querySelector('button');
-    busy(btn, true, 'Logging in…');
-    const { error } = await sb.auth.signInWithPassword({ email, password });
-    busy(btn, false);
-    if (error) showAlert(f, friendlyError(error));
-    // success: auth listener re-renders
-  });
-}
-
-function viewForgot() {
-  app.innerHTML = authLayout(`
-    <h2>Reset your password</h2>
-    <p class="sub">Enter the email you log in with. We will send you a link to set a new password.</p>
-    <form id="f" novalidate>
-      <div class="field"><label for="email">Email</label><input id="email" type="email" autocomplete="email" required></div>
-      <button class="btn btn-block" type="submit">Send reset link</button>
-    </form>
-    <p class="auth-switch"><a href="#/login">Back to log in</a></p>`);
-
-  const f = document.getElementById('f');
-  f.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const email = f.email.value.trim();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return showAlert(f, 'Enter a valid email address.');
-    const btn = f.querySelector('button');
-    busy(btn, true, 'Sending…');
-    const { error } = await sb.auth.resetPasswordForEmail(email, {
-      redirectTo: location.origin + location.pathname + '?reset=1',
-    });
-    busy(btn, false);
-    if (error) return showAlert(f, friendlyError(error));
-    f.innerHTML = `<div class="alert alert-ok" role="status">If ${esc(email)} has a Veltrio account, a reset link is on its way. Open the email and click the link. Check your spam folder too.</div>`;
-  });
-}
-
-function viewResetPassword() {
-  app.innerHTML = authLayout(`
-    <h2>Set a new password</h2>
-    <p class="sub">Choose a new password for ${esc(state.session.user.email)}.</p>
-    <form id="f" novalidate>
-      <div class="field"><label for="pw">New password</label><input id="pw" type="password" autocomplete="new-password" minlength="8" required><span class="hint">At least 8 characters.</span></div>
-      <div class="field"><label for="pw2">Type it again</label><input id="pw2" type="password" autocomplete="new-password" required></div>
-      <button class="btn btn-block" type="submit">Save new password</button>
-    </form>`);
-
-  const f = document.getElementById('f');
-  f.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const pw = f.pw.value, pw2 = f.pw2.value;
-    if (pw.length < 8) return showAlert(f, 'Password must be at least 8 characters.');
-    if (pw !== pw2) return showAlert(f, 'The two passwords do not match.');
-    const btn = f.querySelector('button');
-    busy(btn, true, 'Saving…');
-    const { error } = await sb.auth.updateUser({ password: pw });
-    busy(btn, false);
-    if (error) return showAlert(f, friendlyError(error));
-    state.recovery = false;
-    history.replaceState(null, '', location.pathname + '#/dashboard');
-    render();
-  });
-}
-
-function viewLinkProblem(message) {
-  app.innerHTML = authLayout(`
-    <h2>This link does not work</h2>
-    <p class="sub">${esc(message)}</p>
-    <a class="btn btn-block" href="#/forgot">Send a new reset link</a>
-    <p class="auth-switch"><a href="#/login">Back to log in</a></p>`);
-}
-
-async function viewSignup() {
-  app.innerHTML = authLayout(`
-    <h2>Start your free trial</h2>
-    <p class="sub">Set up your company in two minutes. No payment needed now.</p>
-    <form id="f" novalidate>
-      <div class="field"><label for="full_name">Your name</label><input id="full_name" autocomplete="name" required></div>
-      <div class="field"><label for="company">Company name</label><input id="company" autocomplete="organization" required></div>
-      <div class="row-2">
-        <div class="field"><label for="phone">Phone</label><input id="phone" type="tel" autocomplete="tel" placeholder="03xx xxxxxxx"></div>
-        <div class="field"><label for="plan">Plan</label><select id="plan"><option>Starter</option></select></div>
-      </div>
-      <div class="field"><label for="email">Work email</label><input id="email" type="email" autocomplete="email" required></div>
-      <div class="field"><label for="pw">Password</label><input id="pw" type="password" autocomplete="new-password" minlength="8" required><span class="hint">At least 8 characters.</span></div>
-      <button class="btn btn-block" type="submit">Create company</button>
-    </form>
-    <p class="auth-switch">Already using Veltrio? <a href="#/login">Log in</a></p>`);
-
-  const f = document.getElementById('f');
-
-  // Load plans (readable before login)
-  sb.from('plans').select('name, max_branches, max_employees, trial_days').eq('is_active', true)
-    .order('max_employees', { ascending: true, nullsFirst: false })
-    .then(({ data }) => {
-      if (!data || !data.length) return;
-      f.plan.innerHTML = data.map((p) => {
-        const lim = p.max_employees ? `up to ${p.max_branches} branches, ${p.max_employees} staff` : 'unlimited';
-        return `<option value="${esc(p.name)}" ${p.name === 'Starter' ? 'selected' : ''}>${esc(p.name)} (${lim})</option>`;
-      }).join('');
-    });
-
-  f.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const v = {
-      full_name: f.full_name.value.trim(), company: f.company.value.trim(), phone: f.phone.value.trim(),
-      plan: f.plan.value, email: f.email.value.trim(), password: f.pw.value,
-    };
-    if (!v.full_name || !v.company || !v.email) return showAlert(f, 'Fill in your name, company name and email.');
-    if (v.password.length < 8) return showAlert(f, 'Password must be at least 8 characters.');
-
-    const btn = f.querySelector('button');
-    busy(btn, true, 'Creating company…');
-    state.signingUp = true;
-    const { data, error } = await sb.auth.signUp({
-      email: v.email, password: v.password,
-      options: {
-        emailRedirectTo: location.origin + location.pathname,
-        data: { full_name: v.full_name, company_name: v.company, phone: v.phone, plan: v.plan },
-      },
-    });
-    if (error) { state.signingUp = false; busy(btn, false); return showAlert(f, friendlyError(error)); }
-
-    if (!data.session) {
-      state.signingUp = false;
-      // Email confirmation is on: company is created after the first login
-      busy(btn, false);
-      state.notice = `Almost done. We sent a confirmation link to ${v.email}. Open it, then log in here.`;
-      return go('login');
-    }
-    state.session = data.session;
-    try {
-      await registerCompany(v);
-      await loadProfile();
-    } catch (err) {
-      // Login exists but company failed: the setup screen lets them retry
-      state.profile = undefined;
-    }
-    state.signingUp = false;
-    go('dashboard');
-  });
-}
-
-async function registerCompany(v) {
-  const { error } = await sb.rpc('register_company', {
-    p_company_name: v.company, p_company_email: v.email,
-    p_full_name: v.full_name, p_phone: v.phone || null, p_plan_name: v.plan || 'Starter',
-  });
-  if (error) throw error;
-}
-
-function viewCompanySetup() {
-  const u = state.session.user, m = u.user_metadata || {};
-  app.innerHTML = `
-  <div class="center-page"><div class="center-card">
-    <span class="logo">${LOGO} Veltrio</span>
-    <h2>Set up your company</h2>
-    <p class="sub">Your login is ready. Add your company details to start the free trial.</p>
-    <form id="f" novalidate>
-      <div class="field"><label for="full_name">Your name</label><input id="full_name" value="${esc(m.full_name)}" required></div>
-      <div class="field"><label for="company">Company name</label><input id="company" value="${esc(m.company_name)}" required></div>
-      <div class="field"><label for="phone">Phone</label><input id="phone" type="tel" value="${esc(m.phone)}"></div>
-      <button class="btn btn-block" type="submit">Create company</button>
-    </form>
-    <p class="auth-switch"><a href="#" id="out">Log out</a></p>
-  </div></div>`;
-
-  document.getElementById('out').onclick = (e) => { e.preventDefault(); sb.auth.signOut(); };
-  const f = document.getElementById('f');
-  f.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const v = { full_name: f.full_name.value.trim(), company: f.company.value.trim(), phone: f.phone.value.trim(), email: u.email, plan: m.plan };
-    if (!v.full_name || !v.company) return showAlert(f, 'Fill in your name and company name.');
-    const btn = f.querySelector('button');
-    busy(btn, true, 'Creating company…');
-    try {
-      await registerCompany(v);
-      await loadProfile();
-      go('dashboard');
-    } catch (err) {
-      busy(btn, false);
-      showAlert(f, friendlyError(err));
-    }
-  });
-}
-
-function viewNotice(title, text) {
-  app.innerHTML = `
-  <div class="center-page"><div class="center-card">
-    <span class="logo">${LOGO} Veltrio</span>
-    <h2>${esc(title)}</h2>
-    <p class="sub">${esc(text)}</p>
-    <button class="btn btn-ghost" id="out">Log out</button>
-  </div></div>`;
-  document.getElementById('out').onclick = () => sb.auth.signOut();
+  document.getElementById('in')?.addEventListener('click', () => attendanceFlow('in'));
+  document.getElementById('out')?.addEventListener('click', () => attendanceFlow('out'));
+  document.getElementById('vstart')?.addEventListener('click', () => attendanceFlow('visit'));
+  document.getElementById('vend')?.addEventListener('click', () => visitEnd());
 }
 
 // ---------------------------------------------------------------
-// App shell
+// check in / out / visit: location -> selfie -> send
 // ---------------------------------------------------------------
-function shell(current, inner) {
-  const p = state.profile, isSuper = p.role === 'super_admin';
-  const nav = isSuper ? ADMIN_NAV : COMPANY_NAV;
-  const chip = isSuper
-    ? `<strong>Veltrio admin</strong><span>All companies</span>`
-    : `<strong>${esc(state.company?.name || 'Your company')}</strong><span>${esc(state.sub?.plans?.name || '')}${state.sub ? ' plan' : ''}</span>`;
-  return `
-  <div class="shell" id="shell">
-    <aside class="side">
-      <a class="logo" href="#/dashboard">${LOGO} Veltrio</a>
-      <div class="company-chip">${chip}</div>
-      <nav class="nav" aria-label="Main">
-        ${nav.map(([k, label]) => `<a href="#/${k}" class="${k === current ? 'active' : ''}" ${k === current ? 'aria-current="page"' : ''}>${icon(k === 'dashboard' && isSuper ? 'dashboard' : k)}${label}</a>`).join('')}
-      </nav>
-      <div class="side-foot">
-        <div class="who">${esc(p.full_name)}</div>
-        <div class="role">${esc(ROLE_NAMES[p.role] || p.role)}</div>
-        <button id="out" type="button">Log out</button>
-      </div>
-    </aside>
-    <main class="main" id="main">${inner}</main>
-  </div>`;
+function getPosition() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) return reject(new Error('This phone cannot share location.'));
+    navigator.geolocation.getCurrentPosition((p) => resolve(p.coords),
+      (e) => reject(new Error(e.code === 1 ? 'Location permission is blocked. Allow location for this app in your phone settings.' : 'Could not find your location. Go outside or near a window and try again.')),
+      { enableHighAccuracy: true, timeout: 25000, maximumAge: 0 });
+  });
 }
 
-function bindShell() {
-  document.getElementById('out').onclick = () => sb.auth.signOut();
-  document.querySelectorAll('[data-menu]').forEach((b) => b.onclick = () => document.getElementById('shell').classList.toggle('open'));
-  document.querySelectorAll('.nav a').forEach((a) => a.addEventListener('click', () => document.getElementById('shell').classList.remove('open')));
-}
-
-const topbar = (title, sub) => `
-  <div class="topbar">
-    <div>
-      <button class="btn btn-ghost menu-btn" data-menu type="button" aria-label="Open menu">Menu</button>
-      <h1>${esc(title)}</h1>
-      ${sub ? `<p class="sub">${esc(sub)}</p>` : ''}
+async function attendanceFlow(kind) {
+  const title = kind === 'in' ? 'Check in' : kind === 'out' ? 'Check out' : 'Start store visit';
+  const needSelfie = S.settings.selfie_required !== false;
+  const sheet = document.createElement('div');
+  sheet.className = 'sheet'; sheet.setAttribute('role', 'dialog'); sheet.setAttribute('aria-label', title);
+  sheet.innerHTML = `<div class="inner">
+    <div class="sheet-head"><h2>${title}</h2><button class="close" aria-label="Close">×</button></div>
+    <div class="steps">
+      <div class="step" id="s1"><span class="dot">1</span><div class="txt"><b>Location</b><span>Finding where you are…</span></div></div>
+      ${needSelfie ? '<div class="step" id="s2"><span class="dot">2</span><div class="txt"><b>Selfie</b><span>Take a clear photo of your face</span></div></div>' : ''}
     </div>
-  </div>`;
+    <div id="area"></div></div>`;
+  document.body.appendChild(sheet);
+  let stream = null;
+  const close = () => { if (stream) stream.getTracks().forEach((t) => t.stop()); sheet.remove(); };
+  sheet.querySelector('.close').onclick = close;
+  const area = sheet.querySelector('#area');
+  const step = (id, cls, text) => { const s = sheet.querySelector('#' + id); if (!s) return; s.className = 'step ' + cls; s.querySelector('.dot').textContent = cls === 'done' ? '✓' : cls === 'bad' ? '!' : s.querySelector('.dot').textContent; if (text) s.querySelector('span:last-child').textContent = text; };
+
+  // 1. location
+  let pos, target;
+  const locate = async () => {
+    area.innerHTML = '';
+    step('s1', '', 'Finding where you are…');
+    try { pos = await getPosition(); } catch (e) { step('s1', 'bad', e.message); area.innerHTML = '<button class="btn" id="again">Try again</button>'; area.querySelector('#again').onclick = async () => { if (await locate()) next(); }; return false; }
+    if (kind === 'out' && S.me.work_mode !== 'field') {
+      const b = S.branches.find((x) => x.id === (S.open || S.att).branch_id);
+      target = b ? { ...b, dist: distance(pos.latitude, pos.longitude, Number(b.latitude), Number(b.longitude)), radius: b.geofence_radius_m || S.settings.default_geofence_radius_m || 100 } : null;
+    } else {
+      target = allowedBranches(pos.latitude, pos.longitude)[0];
+    }
+    if (!target) { step('s1', 'bad', 'No branch is set up for you. Please contact HR.'); return false; }
+    const acc = Math.round(pos.accuracy);
+    if (target.dist > target.radius) {
+      step('s1', 'bad', `You are ${target.dist} m from ${target.name}. Allowed: ${target.radius} m.`);
+      area.innerHTML = `<p class="hint">GPS accuracy is about ${acc} m. Move closer to the shop entrance and try again.</p><button class="btn" id="again">Try again</button>`;
+      area.querySelector('#again').onclick = async () => { if (await locate()) next(); };
+      return false;
+    }
+    step('s1', 'done', `${target.name}, ${target.dist} m away`);
+    return true;
+  };
+
+  // 2. selfie
+  let photo = null;
+  const takeSelfie = () => new Promise(async (resolve) => {
+    step('s2', '', 'Look at the camera and tap Take photo');
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 720 }, height: { ideal: 960 } }, audio: false });
+    } catch {
+      step('s2', 'bad', 'Camera is blocked. Allow the camera for this app in your phone settings.');
+      area.innerHTML = '<button class="btn" id="again">Try again</button>';
+      area.querySelector('#again').onclick = async () => resolve(await takeSelfie());
+      return;
+    }
+    area.innerHTML = '<div class="cam"><video playsinline autoplay muted></video><div class="ring"></div></div><button class="btn" id="snap">Take photo</button>';
+    const video = area.querySelector('video'); video.srcObject = stream;
+    area.querySelector('#snap').onclick = () => {
+      const w = 480, h = Math.round((video.videoHeight / video.videoWidth) * w) || 640;
+      const c = document.createElement('canvas'); c.width = w; c.height = h;
+      const g = c.getContext('2d'); g.translate(w, 0); g.scale(-1, 1); g.drawImage(video, 0, 0, w, h);
+      stream.getTracks().forEach((t) => t.stop()); stream = null;
+      c.toBlob((blob) => {
+        photo = blob;
+        area.innerHTML = `<div class="cam"><img alt="Your selfie" src="${URL.createObjectURL(blob)}"></div><div class="row"><button class="btn ghost" id="retake">Retake</button><button class="btn" id="use">${title}</button></div>`;
+        area.querySelector('#retake').onclick = async () => resolve(await takeSelfie());
+        area.querySelector('#use').onclick = () => { step('s2', 'done', 'Photo ready'); resolve(true); };
+      }, 'image/jpeg', 0.6);
+    };
+  });
+
+  const send = async () => {
+    area.innerHTML = '<button class="btn" disabled>Saving…</button>';
+    try {
+      let path = null;
+      if (photo) {
+        const kindName = kind === 'visit' ? 'visit' : kind;
+        path = `${S.me.company_id}/${S.me.id}/${today()}/${kindName}-${Date.now()}.jpg`;
+        const up = await sb.storage.from('selfies').upload(path, photo, { contentType: 'image/jpeg', upsert: false });
+        if (up.error) throw new Error('Could not save the selfie. Check your internet and try again.');
+      }
+      const fn = kind === 'in' ? 'check_in' : kind === 'out' ? 'check_out' : 'visit_start';
+      const { data, error } = await sb.rpc(fn, { p_lat: pos.latitude, p_lng: pos.longitude, p_device_id: deviceId(), p_selfie_url: path, p_is_mock_location: false });
+      if (error) throw error;
+      const late = kind === 'in' && data?.status === 'late' ? `<p><span class="tag late">${data.late_minutes} min late</span></p>` : '';
+      const early = kind === 'out' && data?.early_leave_minutes ? `<p>Left ${data.early_leave_minutes} min before the shift ends.</p>` : '';
+      area.innerHTML = `<div class="done-big"><div class="tick">✓</div><h2>${kind === 'in' ? 'Checked in' : kind === 'out' ? 'Checked out' : 'Visit started'}</h2>
+        <p>${esc(target.name)} at ${clock(new Date().toISOString())}</p>${late}${early}</div><button class="btn" id="ok">Done</button>`;
+      area.querySelector('#ok').onclick = () => { close(); viewHome(); };
+    } catch (e) {
+      area.innerHTML = `<div class="alert error" role="alert">${esc(errText(e))}</div><button class="btn" id="again">Try again</button>`;
+      area.querySelector('#again').onclick = () => send();
+    }
+  };
+
+  const next = async () => {
+    if (needSelfie && !(await takeSelfie())) return;
+    send();
+  };
+  if (await locate()) next();
+}
+
+async function visitEnd() {
+  const sheet = document.createElement('div');
+  sheet.className = 'sheet'; sheet.setAttribute('role', 'dialog'); sheet.setAttribute('aria-label', 'Finish visit');
+  sheet.innerHTML = `<div class="inner"><div class="sheet-head"><h2>Finish visit</h2><button class="close" aria-label="Close">×</button></div>
+    <p>Visit at <b>${esc(branchName(S.visit.branch_id))}</b>, started ${clock(S.visit.check_in_at)}.</p>
+    <form id="vf" novalidate><div class="field"><label for="vn">What did you do? <span class="hint">optional</span></label><textarea id="vn" rows="3" placeholder="Checked stock, trained staff"></textarea></div>
+    <button class="btn" type="submit">Finish visit</button></form></div>`;
+  document.body.appendChild(sheet);
+  sheet.querySelector('.close').onclick = () => sheet.remove();
+  const f = sheet.querySelector('#vf');
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const btn = f.querySelector('button'); busy(btn, true, 'Finding your location…');
+    try {
+      const p = await getPosition();
+      busy(btn, true, 'Saving…');
+      const { data, error } = await sb.rpc('visit_end', { p_lat: p.latitude, p_lng: p.longitude, p_device_id: deviceId(), p_notes: f.vn.value.trim() || null, p_is_mock_location: false });
+      if (error) throw error;
+      sheet.remove(); toast(`Visit finished (${data.minutes} min)`); viewHome();
+    } catch (err) { busy(btn, false); alertIn(f, errText(err)); }
+  };
+}
 
 // ---------------------------------------------------------------
-// Company dashboard
+// CLOSING
 // ---------------------------------------------------------------
-async function viewCompanyDashboard() {
-  const greet = `Hello, ${state.profile.full_name.split(' ')[0]}`;
-  app.innerHTML = shell('dashboard', topbar(greet, 'Here is your company today.') + '<div class="panel"><p class="sub">Loading figures…</p></div>');
-  bindShell();
+async function viewClosing() {
+  frame('closing', '<div class="boot">Loading…</div>');
+  try { await loadToday(); } catch (e) { return frame('closing', `<div class="alert error">${esc(errText(e))}</div>`); }
+  if (S.closing) return closingDone(S.closing);
+  const canPrice = !!S.settings.allow_price_edit;
+  let mode = S.products.length ? 'products' : 'amount';
+  const lines = [];
 
-  const t = today(), cid = state.profile.company_id, plan = state.sub?.plans || {};
-  let d;
-  try {
-    const [branches, employees, products, checkedIn, closings] = await Promise.all([
-      count('branches', (q) => q.eq('company_id', cid).eq('is_active', true)),
-      count('employees', (q) => q.eq('company_id', cid).eq('status', 'active')),
-      count('products', (q) => q.eq('company_id', cid).eq('is_active', true)),
-      count('attendance', (q) => q.eq('company_id', cid).eq('attendance_date', t)),
-      sb.from('daily_closings').select('total_amount').eq('company_id', cid).eq('closing_date', t),
-    ]);
-    if (closings.error) throw closings.error;
-    const rows = closings.data || [];
-    d = { branches, employees, products, checkedIn, closingCount: rows.length,
-          closingTotal: rows.reduce((s, r) => s + Number(r.total_amount || 0), 0) };
-  } catch (err) {
-    document.getElementById('main').innerHTML = topbar(greet) + `<div class="alert alert-error" role="alert">Could not load figures: ${esc(friendlyError(err))}</div>`;
-    bindShell();
-    return;
-  }
+  const render = () => {
+    const total = lines.reduce((t, l) => t + Math.max((l.qty - l.ret) * l.price - l.disc, 0), 0);
+    frame('closing', `
+      <div class="head"><div><h1>Daily closing</h1><p>${dayLabel(today(), { weekday: 'long', day: 'numeric', month: 'long' })}</p></div></div>
+      <div class="seg" role="tablist"><button role="tab" data-m="products" class="${mode === 'products' ? 'on' : ''}" aria-selected="${mode === 'products'}">Product-wise</button><button role="tab" data-m="amount" class="${mode === 'amount' ? 'on' : ''}" aria-selected="${mode === 'amount'}">Total amount</button></div>
+      <form id="cf" novalidate>
+      ${mode === 'amount' ? `
+        <div class="field big-amount"><label for="amt">Today's total sale (Rs)</label><input id="amt" type="number" inputmode="numeric" min="0" placeholder="0"></div>` : `
+        ${S.products.length ? '' : '<div class="alert info">No products yet. Ask HR to add products, or use Total amount.</div>'}
+        <div class="field search"><label for="ps">Add a product</label><input id="ps" type="search" placeholder="Search name or code" autocomplete="off"></div>
+        <div class="results" id="res" hidden></div>
+        <div id="lines">${lines.map((l, i) => `<div class="line" data-i="${i}">
+          <div class="top"><span class="name">${esc(l.name)}</span><button type="button" class="link rm">Remove</button></div>
+          <div class="ctrls">
+            <div class="qty"><button type="button" class="dec" aria-label="Less">−</button><input class="q" type="number" inputmode="numeric" min="1" value="${l.qty}" aria-label="Quantity"><button type="button" class="inc" aria-label="More">+</button></div>
+            <label class="mini">Price<input class="pr" type="number" inputmode="numeric" min="0" value="${l.price}" ${canPrice ? '' : 'readonly'}></label>
+            <span class="amount" style="margin-left:auto">Rs ${money(Math.max((l.qty - l.ret) * l.price - l.disc, 0))}</span>
+          </div>
+          <details ${l.disc || l.ret ? 'open' : ''}><summary class="hint">Discount or return</summary><div class="ctrls">
+            <label class="mini">Discount (Rs)<input class="di" type="number" inputmode="numeric" min="0" value="${l.disc}"></label>
+            <label class="mini">Returned qty<input class="re" type="number" inputmode="numeric" min="0" value="${l.ret}"></label></div></details>
+        </div>`).join('')}</div>`}
+        <div class="field"><label for="notes">Note <span class="hint">optional</span></label><input id="notes" placeholder="Anything HR should know"></div>
+        <div class="total-bar">${mode === 'products' ? `<div class="sum"><span>Total</span><span class="num">Rs ${money(total)}</span></div>` : ''}
+          <button class="btn" type="submit">Submit closing</button></div>
+      </form>`);
 
-  let banner = '';
-  if (state.sub && state.sub.status === 'trial') {
-    const left = daysLeft(state.sub.end_date);
-    banner = `<div class="banner"><span>${left > 0 ? `Free trial: ${left} day${left === 1 ? '' : 's'} left` : 'Your free trial has ended'}</span><span>Upgrade from Settings when you are ready.</span></div>`;
-  }
+    document.querySelectorAll('[data-m]').forEach((b) => b.onclick = () => { mode = b.dataset.m; render(); });
+    const f = document.getElementById('cf');
+    const ps = document.getElementById('ps'), res = document.getElementById('res');
+    if (ps) {
+      ps.oninput = () => {
+        const q = ps.value.trim().toLowerCase();
+        const hits = q ? S.products.filter((p) => p.name.toLowerCase().includes(q) || (p.sku || '').toLowerCase().includes(q)).slice(0, 20) : [];
+        res.hidden = !hits.length;
+        res.innerHTML = hits.map((p) => `<button type="button" data-p="${p.id}"><span>${esc(p.name)}</span><span class="muted">Rs ${money(p.default_price)}</span></button>`).join('');
+        res.querySelectorAll('[data-p]').forEach((b) => b.onclick = () => {
+          const p = S.products.find((x) => x.id === b.dataset.p);
+          const ex = lines.find((l) => l.id === p.id);
+          if (ex) ex.qty += 1; else lines.push({ id: p.id, name: p.name, qty: 1, price: Number(p.default_price), disc: 0, ret: 0 });
+          render(); document.getElementById('ps')?.focus();
+        });
+      };
+      document.querySelectorAll('.line').forEach((el) => {
+        const l = lines[Number(el.dataset.i)];
+        const upd = () => { l.qty = Math.max(1, Number(el.querySelector('.q').value) || 1); l.price = Math.max(0, Number(el.querySelector('.pr').value) || 0); l.disc = Math.max(0, Number(el.querySelector('.di').value) || 0); l.ret = Math.min(l.qty, Math.max(0, Number(el.querySelector('.re').value) || 0)); };
+        el.querySelector('.inc').onclick = () => { upd(); l.qty++; render(); };
+        el.querySelector('.dec').onclick = () => { upd(); l.qty = Math.max(1, l.qty - 1); render(); };
+        el.querySelector('.rm').onclick = () => { lines.splice(Number(el.dataset.i), 1); render(); };
+        el.querySelectorAll('input').forEach((i) => i.onchange = () => { upd(); render(); });
+      });
+    }
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const notes = document.getElementById('notes').value.trim() || null;
+      let args;
+      if (mode === 'amount') {
+        const amt = Number(document.getElementById('amt').value);
+        if (!(amt >= 0) || document.getElementById('amt').value === '') return alertIn(f, 'Enter today’s total sale.');
+        args = { p_closing_type: 'simple_amount', p_total_amount: amt, p_items: null, p_notes: notes };
+      } else {
+        if (!lines.length) return alertIn(f, 'Add at least one product, or use Total amount.');
+        if (lines.some((l) => l.disc > (l.qty - l.ret) * l.price)) return alertIn(f, 'A discount is more than the product amount.');
+        args = { p_closing_type: 'product_wise', p_total_amount: null, p_notes: notes,
+          p_items: lines.map((l) => ({ product_id: l.id, quantity: l.qty, unit_price: l.price, discount: l.disc, return_quantity: l.ret })) };
+      }
+      if (!confirm('Submit today’s closing? You cannot change it later, only ask for a correction.')) return;
+      const btn = f.querySelector('button[type=submit]'); busy(btn, true, 'Submitting…');
+      const { error } = await sb.rpc('submit_closing', args);
+      busy(btn, false);
+      if (error) return alertIn(f, errText(error));
+      toast('Closing submitted'); viewClosing();
+    };
+  };
+  render();
+}
 
-  const lim = (n) => (n ? `<small> / ${n}</small>` : '');
-  const steps = [
-    ['Add your branches', 'Shop name, address and location for GPS check-in.', d.branches > 0, 'branches'],
-    ['Add employees', 'Staff details, salary and their app login.', d.employees > 0, 'employees'],
-    ['Add products', 'Products and prices for the daily sales closing.', d.products > 0, 'products'],
-    ['Staff start using the app', 'Employees check in and submit their closing from the phone.', d.checkedIn > 0, 'attendance'],
-  ];
-  const doneAll = steps.every((s) => s[2]);
-
-  document.getElementById('main').innerHTML = `
-    ${topbar(greet, new Intl.DateTimeFormat('en-GB', { timeZone: TIME_ZONE, weekday: 'long', day: 'numeric', month: 'long' }).format(new Date()))}
-    ${banner}
-    <section class="stats" aria-label="Today at a glance">
-      <div class="stat"><div class="label">Checked in today</div><div class="value">${d.checkedIn}<small> / ${d.employees}</small></div><div class="foot">active employees</div></div>
-      <div class="stat"><div class="label">Today's sales closing</div><div class="value">${money(d.closingTotal)}</div><div class="foot">${d.closingCount} closing${d.closingCount === 1 ? '' : 's'} submitted</div></div>
-      <div class="stat"><div class="label">Branches</div><div class="value">${d.branches}${lim(plan.max_branches)}</div><div class="foot">${plan.max_branches ? 'allowed on your plan' : 'active'}</div></div>
-      <div class="stat"><div class="label">Employees</div><div class="value">${d.employees}${lim(plan.max_employees)}</div><div class="foot">${plan.max_employees ? 'allowed on your plan' : 'active'}</div></div>
+async function closingDone(c) {
+  const it = c.closing_type === 'product_wise' ? (await sb.from('closing_items').select('*').eq('closing_id', c.id).order('created_at')).data || [] : [];
+  const cr = (await sb.from('closing_corrections').select('status, reason, review_note, created_at').eq('closing_id', c.id).order('created_at', { ascending: false })).data || [];
+  const pending = cr.some((x) => x.status === 'pending');
+  frame('closing', `
+    <div class="head"><div><h1>Daily closing</h1><p>${dayLabel(c.closing_date, { weekday: 'long', day: 'numeric', month: 'long' })}</p></div></div>
+    <section class="card"><h2>Submitted</h2><p class="amount" style="font-size:28px;color:var(--ink)">Rs ${money(c.total_amount)}</p>
+      ${it.length ? `<ul class="list" style="margin-top:10px">${it.map((i) => `<li><div><div class="t">${esc(i.product_name_snapshot)}</div><div class="s">${nd(i.quantity)} × Rs ${money(i.unit_price)}${Number(i.discount_amount) ? `, discount ${money(i.discount_amount)}` : ''}${Number(i.return_quantity) ? `, ${nd(i.return_quantity)} returned` : ''}</div></div><span class="amount">${money(i.line_total)}</span></li>`).join('')}</ul>` : ''}
     </section>
-    ${doneAll ? '' : `
-    <section class="panel">
-      <h2>Get your company running</h2>
-      <p class="sub">Finish these in order and your staff can start checking in.</p>
-      <ol class="steps">
-        ${steps.map(([t1, t2, done, link], i) => `
-          <li class="${done ? 'done' : ''}">
-            <span class="n" aria-hidden="true">${done ? '✓' : i + 1}</span>
-            <div><div class="t">${t1}${done ? '<span class="sr-only"> (done)</span>' : ''}</div><div class="d">${t2}</div></div>
-            ${done ? '' : `<a class="btn btn-ghost" href="#/${link}">Open</a>`}
-          </li>`).join('')}
-      </ol>
-    </section>`}`;
-  bindShell();
+    ${cr.length ? `<p class="section-title">Corrections</p><section class="card"><ul class="list">${cr.map((x) => `<li><div><div class="t">${esc(x.reason)}</div>${x.review_note ? `<div class="s">HR: ${esc(x.review_note)}</div>` : ''}</div><span class="tag ${x.status === 'approved' ? 'ok' : x.status === 'rejected' ? 'bad' : 'warn'}">${x.status === 'pending' ? 'Waiting' : x.status === 'approved' ? 'Approved' : 'Rejected'}</span></li>`).join('')}</ul></section>` : ''}
+    ${pending ? '' : '<button class="btn ghost" id="fix">Something is wrong? Ask for a correction</button>'}`);
+  document.getElementById('fix')?.addEventListener('click', () => correctionForm(c, it));
+}
+
+function correctionForm(c, items) {
+  const sheet = document.createElement('div');
+  sheet.className = 'sheet'; sheet.setAttribute('role', 'dialog'); sheet.setAttribute('aria-label', 'Ask for a correction');
+  const lines = items.map((i) => ({ id: i.product_id, name: i.product_name_snapshot, qty: Number(i.quantity), price: Number(i.unit_price), disc: Number(i.discount_amount), ret: Number(i.return_quantity) }));
+  sheet.innerHTML = `<div class="inner"><div class="sheet-head"><h2>Ask for a correction</h2><button class="close" aria-label="Close">×</button></div>
+    <p class="hint">Your manager or HR checks and approves it.</p>
+    <form id="rf" novalidate>
+      ${c.closing_type === 'simple_amount' ? `<div class="field big-amount"><label for="na">Correct total (Rs)</label><input id="na" type="number" inputmode="numeric" min="0" value="${Number(c.total_amount)}"></div>`
+        : `<div id="cl">${lines.map((l, i) => `<div class="line"><div class="top"><span class="name">${esc(l.name)}</span></div><div class="ctrls">
+            <label class="mini">Correct qty<input data-i="${i}" class="q" type="number" inputmode="numeric" min="0" value="${l.qty}"></label>
+            <label class="mini">Returned<input data-i="${i}" class="re" type="number" inputmode="numeric" min="0" value="${l.ret}"></label></div></div>`).join('')}</div>
+          <p class="hint">Set a quantity to 0 to remove that product.</p>`}
+      <div class="field"><label for="why">What was wrong?</label><input id="why" placeholder="Typed one extra zero"></div>
+      <button class="btn" type="submit">Send request</button></form></div>`;
+  document.body.appendChild(sheet);
+  sheet.querySelector('.close').onclick = () => sheet.remove();
+  const f = sheet.querySelector('#rf');
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const why = f.querySelector('#why').value.trim();
+    if (!why) return alertIn(f, 'Write what was wrong.');
+    let changes;
+    if (c.closing_type === 'simple_amount') {
+      const v = Number(f.querySelector('#na').value);
+      if (!(v >= 0)) return alertIn(f, 'Enter the correct total.');
+      changes = { total_amount: v };
+    } else {
+      f.querySelectorAll('.q').forEach((i) => { lines[i.dataset.i].qty = Number(i.value) || 0; });
+      f.querySelectorAll('.re').forEach((i) => { lines[i.dataset.i].ret = Number(i.value) || 0; });
+      const keep = lines.filter((l) => l.qty > 0);
+      if (!keep.length) return alertIn(f, 'At least one product must stay.');
+      if (keep.some((l) => l.ret > l.qty)) return alertIn(f, 'Returned quantity cannot be more than the quantity.');
+      changes = { items: keep.map((l) => ({ product_id: l.id, quantity: l.qty, unit_price: l.price, discount: l.disc, return_quantity: l.ret })) };
+    }
+    const btn = f.querySelector('button[type=submit]'); busy(btn, true, 'Sending…');
+    const { error } = await sb.rpc('request_closing_correction', { p_closing: c.id, p_reason: why, p_changes: changes });
+    busy(btn, false);
+    if (error) return alertIn(f, errText(error));
+    sheet.remove(); toast('Correction request sent'); route() === 'closing' ? viewClosing() : viewMe();
+  };
 }
 
 // ---------------------------------------------------------------
-// Super admin overview
+// LEAVE
 // ---------------------------------------------------------------
-async function viewSuperDashboard() {
-  app.innerHTML = shell('dashboard', topbar('Overview', 'All companies on Veltrio.') + '<div class="panel"><p class="sub">Loading…</p></div>');
-  bindShell();
+async function viewLeave() {
+  frame('leave', '<div class="boot">Loading…</div>');
+  const [b, t, r] = await Promise.all([
+    sb.rpc('leave_balance', { p_employee: S.me.id, p_on: today() }),
+    sb.from('leave_types').select('id, name, is_paid, allow_half_day').eq('company_id', S.me.company_id).eq('is_active', true).order('sort'),
+    sb.from('leave_requests').select('*').eq('employee_id', S.me.id).order('start_date', { ascending: false }).limit(30),
+  ]);
+  if (b.error) return frame('leave', `<div class="alert error">${esc(errText(b.error))}</div>`);
+  const bal = (b.data || []).filter((x) => x.is_paid), types = t.data || [], reqs = r.data || [];
+  const tName = (id) => types.find((x) => x.id === id)?.name || 'Leave';
+  const ST = { pending: ['Waiting', 'warn'], manager_approved: ['Waiting for HR', 'warn'], approved: ['Approved', 'ok'], rejected: ['Rejected', 'bad'], cancelled: ['Cancelled', 'neutral'] };
 
-  const { data, error } = await sb.from('companies')
-    .select('id, name, email, status, created_at').order('created_at', { ascending: false });
-  if (error) {
-    document.getElementById('main').innerHTML = topbar('Overview') + `<div class="alert alert-error" role="alert">${esc(friendlyError(error))}</div>`;
-    return bindShell();
-  }
-  const by = (s) => data.filter((c) => c.status === s).length;
-  const fmt = (d) => new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(d));
+  frame('leave', `
+    <div class="head"><div><h1>Leave</h1><p>Days left this leave year</p></div></div>
+    <div class="bal">${bal.map((x) => `<div><b class="num">${nd(x.remaining)}</b><span>${esc(x.name)} of ${nd(Number(x.quota) + Number(x.adjusted))}</span></div>`).join('') || '<p class="hint">No paid leave types yet.</p>'}</div>
+    <p class="section-title">Apply for leave</p>
+    <section class="card"><form id="lf" novalidate>
+      <div class="field"><label for="lt">Leave type</label><select id="lt">${types.map((x) => `<option value="${x.id}" data-half="${x.allow_half_day}">${esc(x.name)}${x.is_paid ? '' : ' (unpaid)'}</option>`).join('')}</select></div>
+      <div class="row"><div class="field"><label for="lfrom">From</label><input id="lfrom" type="date" value="${today()}" min="${today()}"></div>
+        <div class="field"><label for="lto">To</label><input id="lto" type="date" value="${today()}" min="${today()}"></div></div>
+      <label class="check"><input type="checkbox" id="lhalf"> Half day</label>
+      <div class="field"><label for="lr">Reason</label><input id="lr" placeholder="Family wedding"></div>
+      <button class="btn" type="submit">Send request</button></form></section>
+    ${reqs.length ? `<p class="section-title">My requests</p><section class="card"><ul class="list">${reqs.map((x) => `<li><div><div class="t">${esc(tName(x.leave_type_id))}, ${nd(x.days)} day${Number(x.days) === 1 ? '' : 's'}</div>
+      <div class="s">${x.start_date === x.end_date ? dayLabel(x.start_date) : `${dayLabel(x.start_date)} to ${dayLabel(x.end_date)}`}${x.final_note || x.manager_note ? ` · ${esc(x.final_note || x.manager_note)}` : ''}</div>
+      ${['pending', 'manager_approved'].includes(x.status) ? `<button class="link" data-cancel="${x.id}">Cancel request</button>` : ''}</div>
+      <span class="tag ${ST[x.status][1]}">${ST[x.status][0]}</span></li>`).join('')}</ul></section>` : ''}`);
 
-  document.getElementById('main').innerHTML = `
-    ${topbar('Overview', 'All companies on Veltrio.')}
-    <section class="stats" aria-label="Companies">
-      <div class="stat"><div class="label">Companies</div><div class="value">${data.length}</div></div>
-      <div class="stat"><div class="label">Paying</div><div class="value">${by('active')}</div></div>
-      <div class="stat"><div class="label">On free trial</div><div class="value">${by('trial')}</div></div>
-      <div class="stat"><div class="label">Suspended or expired</div><div class="value">${by('suspended') + by('expired')}</div></div>
-    </section>
-    <section class="panel">
-      <h2>Latest signups</h2>
-      ${data.length ? `
-      <div class="table-wrap"><table>
-        <thead><tr><th>Company</th><th>Email</th><th>Status</th><th>Joined</th></tr></thead>
-        <tbody>${data.slice(0, 20).map((c) => `
-          <tr><td><b>${esc(c.name)}</b></td><td>${esc(c.email)}</td>
-          <td><span class="pill pill-${esc(c.status)}">${esc(c.status[0].toUpperCase() + c.status.slice(1))}</span></td>
-          <td class="num">${fmt(c.created_at)}</td></tr>`).join('')}
-        </tbody></table></div>` : `
-      <div class="empty"><h2>No companies yet</h2><p>When a company signs up for a free trial, it shows up here.</p></div>`}
-    </section>`;
-  bindShell();
+  const f = document.getElementById('lf');
+  const half = f.querySelector('#lhalf'), lt = f.querySelector('#lt'), to = f.querySelector('#lto');
+  const sync = () => { const ok = lt.selectedOptions[0]?.dataset.half === 'true'; half.disabled = !ok; if (!ok) half.checked = false; to.disabled = half.checked; };
+  half.onchange = sync; lt.onchange = sync; sync();
+  f.querySelector('#lfrom').onchange = (e) => { if (to.value < e.target.value) to.value = e.target.value; to.min = e.target.value; };
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const from = f.querySelector('#lfrom').value, end = half.checked ? from : to.value, reason = f.querySelector('#lr').value.trim();
+    if (!lt.value || !from || !end) return alertIn(f, 'Choose the leave type and dates.');
+    if (end < from) return alertIn(f, 'The end date must be after the start date.');
+    if (!reason) return alertIn(f, 'Write a short reason.');
+    const btn = f.querySelector('button'); busy(btn, true, 'Sending…');
+    const { error } = await sb.rpc('submit_leave', { p_leave_type: lt.value, p_start: from, p_end: end, p_half_day: half.checked, p_reason: reason });
+    busy(btn, false);
+    if (error) return alertIn(f, errText(error));
+    toast('Leave request sent'); viewLeave();
+  };
+  document.querySelectorAll('[data-cancel]').forEach((b) => b.onclick = async () => {
+    if (!confirm('Cancel this leave request?')) return;
+    const { error } = await sb.rpc('cancel_leave', { p_request: b.dataset.cancel, p_note: 'Cancelled by employee' });
+    if (error) return toast(errText(error), true);
+    toast('Request cancelled'); viewLeave();
+  });
 }
 
 // ---------------------------------------------------------------
-// Pages that arrive in later parts
+// ME: attendance history, closings, payslips, advances, logout
 // ---------------------------------------------------------------
-function viewComing(key) {
-  const [title, text, part] = COMING[key];
-  app.innerHTML = shell(key, topbar(title) + `
-    <section class="panel"><div class="empty">
-      <h2>Coming in the next update</h2>
-      <p>${esc(text)}</p>
-      <p class="hint">Part ${part}</p>
-    </div></section>`);
-  bindShell();
+async function viewMe() {
+  frame('me', '<div class="boot">Loading…</div>');
+  const from = today().slice(0, 8) + '01';
+  const [a, c, runs, slips, adv, co] = await Promise.all([
+    sb.from('attendance').select('attendance_date, status, check_in_at, check_out_at, late_minutes').eq('employee_id', S.me.id).gte('attendance_date', from).order('attendance_date', { ascending: false }),
+    sb.from('daily_closings').select('*').eq('employee_id', S.me.id).order('closing_date', { ascending: false }).limit(14),
+    sb.from('payroll_runs').select('id, period_start, period_end, status').eq('status', 'finalized').order('period_start', { ascending: false }).limit(12),
+    sb.from('payslips').select('*').eq('employee_id', S.me.id),
+    sb.rpc('advance_list'),
+    sb.from('companies').select('login_code, name').eq('id', S.me.company_id).maybeSingle(),
+  ]);
+  const att = a.data || [], cls = c.data || [], rs = runs.data || [], sl = slips.data || [], advs = (adv.data || []).filter((x) => Number(x.remaining) > 0);
+  const present = att.filter((x) => ['present', 'late'].includes(x.status)).length, late = att.filter((x) => x.status === 'late').length;
+  const tag = { present: ['Present', 'ok'], late: ['Late', 'warn'], absent: ['Absent', 'bad'], leave: ['Leave', 'neutral'], half_day: ['Half day', 'neutral'], holiday: ['Holiday', 'neutral'] };
+
+  frame('me', `
+    <div class="head"><div><h1>${esc(S.me.full_name)}</h1><p>Staff ID ${esc(co.data?.login_code || '')}-${esc(S.me.employee_code)} · ${esc(branchName(S.me.home_branch_id))}</p></div></div>
+    <p class="section-title">This month</p>
+    <section class="card"><p style="margin:0 0 6px">${present} days present${late ? `, ${late} late` : ''}</p>
+      <ul class="list">${att.slice(0, 10).map((x) => `<li><div><div class="t">${dayLabel(x.attendance_date)}</div><div class="s">${x.check_in_at ? `${clock(x.check_in_at)} to ${clock(x.check_out_at)}` : '–'}</div></div><span class="tag ${(tag[x.status] || ['', 'neutral'])[1]}">${(tag[x.status] || [x.status])[0]}${x.status === 'late' && x.late_minutes ? ` ${x.late_minutes}m` : ''}</span></li>`).join('') || '<li class="s">No attendance yet this month.</li>'}</ul></section>
+    <p class="section-title">My closings</p>
+    <section class="card"><ul class="list">${cls.map((x) => `<li><button class="item" data-cl="${x.id}"><div><div class="t">${dayLabel(x.closing_date)}</div><div class="s">${x.closing_type === 'product_wise' ? 'Product-wise' : 'Total amount'}${x.status === 'correction_requested' ? ' · correction asked' : x.status === 'corrected' ? ' · corrected' : ''}</div></div><span class="amount">Rs ${money(x.total_amount)}</span></button></li>`).join('') || '<li class="s">No closings yet.</li>'}</ul></section>
+    <p class="section-title">Payslips</p>
+    <section class="card"><ul class="list">${rs.map((r) => { const s = sl.find((x) => x.run_id === r.id); return s ? `<li><button class="item" data-slip="${s.id}"><div><div class="t">${new Intl.DateTimeFormat('en-GB', { month: 'long', year: 'numeric' }).format(new Date(r.period_end + 'T00:00:00'))}</div><div class="s">${dayLabel(r.period_start)} to ${dayLabel(r.period_end)}</div></div><span class="amount">Rs ${money(s.net)}</span></button></li>` : ''; }).join('') || '<li class="s">Your payslips show here after HR finalizes payroll.</li>'}</ul></section>
+    ${advs.length ? `<p class="section-title">Advance</p><section class="card"><ul class="list">${advs.map((x) => `<li><div><div class="t">Rs ${money(x.remaining)} left</div><div class="s">of Rs ${money(x.amount)}, Rs ${money(x.installment)} cut each month</div></div></li>`).join('')}</ul></section>` : ''}
+    <button class="btn ghost" id="logout" style="margin-top:22px">Log out</button>`);
+
+  document.querySelectorAll('[data-cl]').forEach((b) => b.onclick = () => closingDone(cls.find((x) => x.id === b.dataset.cl)));
+  document.querySelectorAll('[data-slip]').forEach((b) => b.onclick = () => payslip(sl.find((x) => x.id === b.dataset.slip), rs.find((r) => r.id === sl.find((x) => x.id === b.dataset.slip).run_id)));
+  document.getElementById('logout').onclick = async () => { if (confirm('Log out?')) { S.me = null; await sb.auth.signOut(); history.replaceState(null, '', '#/home'); viewLogin(); } };
+}
+
+function payslip(s, r) {
+  const d = s.days || {};
+  const rows = [['Basic salary', s.basic_salary, ''], ['Overtime', s.overtime_amount, ''], ['Commission', s.commission, ''], ['Bonus', s.bonus, ''],
+    ['Absent', s.absent_cut, '−'], ['Unpaid leave', s.unpaid_leave_cut, '−'], ['Late', s.late_cut, '−'], ['Before joining', s.not_joined_cut, '−'],
+    ['Advance installment', s.advance_cut, '−'], ['Other deduction', s.other_cut, '−']].filter((x) => Number(x[1]) || x[0] === 'Basic salary');
+  const sheet = document.createElement('div');
+  sheet.className = 'sheet'; sheet.setAttribute('role', 'dialog'); sheet.setAttribute('aria-label', 'Payslip');
+  sheet.innerHTML = `<div class="inner"><div class="sheet-head"><h2>Payslip</h2><button class="close" aria-label="Close">×</button></div>
+    <p class="muted">${dayLabel(r.period_start)} to ${dayLabel(r.period_end)}</p>
+    <section class="card"><p style="margin:0">${nd(d.present)} days present of ${nd(d.working)}, ${nd(d.absent)} absent, ${nd(d.paid_leave)} paid leave</p></section>
+    <section class="card">${rows.map(([l, v, sign]) => `<div class="slip-row"><span>${l}</span><span class="num">${sign}${money(v)}</span></div>`).join('')}
+      <div class="slip-row tot"><span>Net pay</span><span class="num">Rs ${money(s.net)}</span></div></section>
+    ${s.note ? `<p class="hint">${esc(s.note)}</p>` : ''}</div>`;
+  document.body.appendChild(sheet);
+  sheet.querySelector('.close').onclick = () => sheet.remove();
 }
 
 // ---------------------------------------------------------------
-// Router
+// start
 // ---------------------------------------------------------------
-let rendering = false, again = false;
 async function render() {
-  if (rendering) { again = true; return; }
-  rendering = true;
-  try {
-    if (!configured) return viewNotConfigured();
-    const r = route();
-
-    if (state.recovery) {
-      if (state.session) return viewResetPassword();
-      state.recovery = false;
-      state.linkErrorShown = true;
-      history.replaceState(null, '', location.pathname + '#/login');
-      return viewLinkProblem(/expired|invalid/i.test(LINK_ERROR || 'expired')
-        ? 'The reset link has expired or was already used. Links work once and only for a short time.'
-        : LINK_ERROR);
-    }
-    if (LINK_ERROR && !state.linkErrorShown) {
-      state.linkErrorShown = true;
-      history.replaceState(null, '', location.pathname + '#/login');
-      if (!state.session) return viewLinkProblem('The link from your email has expired or was already used.');
-    }
-
-    if (!state.session) {
-      state.profile = undefined;
-      if (r === 'signup') return viewSignup();
-      if (r === 'forgot') return viewForgot();
-      return viewLogin();
-    }
-    if (state.profile === undefined) await loadProfile();
-
-    const p = state.profile;
-    if (!p) return viewCompanySetup();
-    if (!p.is_active) return viewNotice('Your account is switched off', 'Ask your company admin to switch it back on.');
-    if (p.role === 'employee') return viewNotice('Use the Veltrio app', 'This panel is for admins and managers. Employees check in and submit closings from the Veltrio mobile app.');
-
-    const isSuper = p.role === 'super_admin';
-    const allowed = (isSuper ? ADMIN_NAV : COMPANY_NAV).map((n) => n[0]);
-    if (r === 'login' || r === 'signup' || r === 'forgot' || !allowed.includes(r)) { location.hash = '#/dashboard'; return; }
-
-    if (r === 'dashboard') return isSuper ? viewSuperDashboard() : viewCompanyDashboard();
-    if (r === 'branches') return pages.viewBranches(query().get('edit'));
-    if (r === 'settings') return pages.viewSettings();
-    if (r === 'employees') return employees.viewEmployees(query().get('edit'));
-    if (r === 'leave') return leave.viewLeave(query().get('tab'));
-    if (r === 'products') return reports.viewProducts();
-    if (r === 'attendance') return reports.viewAttendance(query().get('tab'));
-    if (r === 'closings') return reports.viewClosings(query().get('tab'));
-    if (r === 'payroll') return payroll.viewPayroll(query().get('tab'), query().get('month'));
-    return viewComing(r);
-  } catch (err) {
-    console.error(err);
-    viewNotice('Something went wrong', friendlyError(err));
-  } finally {
-    rendering = false;
-    if (again) { again = false; render(); }
-  }
+  document.querySelectorAll('.sheet').forEach((s) => s.remove());
+  const r = route();
+  if (r === 'closing') return viewClosing();
+  if (r === 'leave') return viewLeave();
+  if (r === 'me') return viewMe();
+  return viewHome();
 }
 
-const pages = initSetupPages({ sb, state, shell, topbar, bindShell, esc, busy, friendlyError, can, reloadPerms });
-const employees = initEmployeesPage({ sb, state, shell, bindShell, esc, busy, friendlyError, today, can });
-const leave = initLeavePage({ sb, state, shell, bindShell, esc, busy, friendlyError, today, can });
-const reports = initReportPages({ sb, state, shell, bindShell, esc, busy, friendlyError, today, can });
-const payroll = initPayrollPage({ sb, state, shell, bindShell, esc, busy, friendlyError, today, can });
-
-window.addEventListener('hashchange', (e) => {
-  // In-page section links (#s-shifts) on the settings page are not routes
-  if (/^#s-/.test(location.hash)) {
-    const el = document.getElementById(location.hash.slice(1));
-    history.replaceState(null, '', e.oldURL);
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    return;
+async function boot() {
+  const { data } = await sb.auth.getSession();
+  S.session = data.session;
+  if (!S.session) return viewLogin();
+  try { await loadBase(); } catch (e) { return viewLogin(errText(e)); }
+  if (!S.me) {
+    await sb.auth.signOut();
+    return viewLogin('This login is not linked to an employee. Company admins use the web panel.');
+  }
+  if (S.me.status !== 'active' || S.profile?.is_active === false) {
+    await sb.auth.signOut();
+    return viewLogin('Your account is not active. Please contact HR.');
   }
   render();
-});
-
-if (configured) {
-  const { data } = await sb.auth.getSession();
-  state.session = data.session;
-  sb.auth.onAuthStateChange((event, session) => {
-    const changedUser = (session?.user?.id || null) !== (state.session?.user?.id || null);
-    state.session = session;
-    if (event === 'PASSWORD_RECOVERY') { state.recovery = true; return render(); }
-    if (state.signingUp) return;
-    if (changedUser || event === 'SIGNED_OUT') {
-      state.profile = undefined;
-      if (!session) location.hash = '#/login';
-      render();
-    }
-  });
 }
-render();
+
+window.addEventListener('hashchange', () => { if (S.me) render(); });
+sb.auth.onAuthStateChange((ev) => { if (ev === 'SIGNED_OUT') { S.me = null; } });
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+deviceId();
+boot();

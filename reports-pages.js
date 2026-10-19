@@ -239,6 +239,15 @@ export function initReportPages(ctx) {
     ]);
     if (a.error) return page('attendance', 'Attendance', tabs, 'day', '', errBody(a.error));
     const rows = a.data || [], visits = v.data || [];
+    // selfies are private: get short-lived links for the photos of this day
+    const paths = [...new Set(rows.flatMap((r) => [r.check_in_selfie_url, r.check_out_selfie_url]).concat(visits.map((x) => x.check_in_selfie_url))
+      .filter((x) => x && !/^https?:/i.test(x)))];
+    const signed = {};
+    if (paths.length) {
+      const { data: urls } = await sb.storage.from('selfies').createSignedUrls(paths, 3600);
+      (urls || []).forEach((u) => { if (u.signedUrl) signed[u.path] = u.signedUrl; });
+    }
+    const thumb = (pth, label) => (pth && signed[pth] ? `<button type="button" class="thumb" data-img="${esc(signed[pth])}" data-cap="${esc(label)}" aria-label="View selfie: ${esc(label)}"><img src="${esc(signed[pth])}" alt="" loading="lazy"></button>` : '');
     const bName = (id) => L.branches.find((b) => b.id === id)?.name || '';
     const edit = can('attendance.edit');
     const emps = L.emps.filter((e) => (e.status === 'active' || rows.some((r) => r.employee_id === e.id)) && (!e.joining_date || e.joining_date <= day));
@@ -283,14 +292,15 @@ export function initReportPages(ctx) {
         const far = (m) => (m != null ? `<span class="hint ${m > 150 ? 'neg' : ''}">${m} m</span>` : '');
         return `<tr>
           <td><b>${esc(e.full_name)}</b> <span class="code">${esc(e.employee_code)}</span>${r?.notes ? `<div class="hint">${esc(r.notes)}</div>` : ''}</td>
-          <td>${esc(bName(r?.branch_id || e.home_branch_id))}${vs.length ? `<div class="hint">${vs.length} store visit${vs.length === 1 ? '' : 's'}: ${vs.map((x) => esc(bName(x.branch_id))).join(', ')}</div>` : ''}</td>
+          <td>${esc(bName(r?.branch_id || e.home_branch_id))}${vs.length ? `<div class="hint">${vs.length} store visit${vs.length === 1 ? '' : 's'}:</div><div class="visits">${vs.map((x) => `<span>${thumb(x.check_in_selfie_url, `${e.full_name}, visit at ${bName(x.branch_id)} ${clock(x.check_in_at)}`)}${esc(bName(x.branch_id))} ${clock(x.check_in_at)}${x.check_out_at ? `–${clock(x.check_out_at)}` : ''}</span>`).join('')}</div>` : ''}</td>
           <td><span class="pill ${cls}">${lbl}${st === 'late' && r?.late_minutes ? ` ${r.late_minutes} min` : ''}</span>${r?.edited_by ? '<div class="hint">Marked by hand</div>' : ''}</td>
-          <td class="num">${clock(r?.check_in_at)} ${far(r?.check_in_distance_m)}${r?.check_in_selfie_url ? ` <a href="${esc(r.check_in_selfie_url)}" target="_blank" rel="noopener">Selfie</a>` : ''}</td>
-          <td class="num">${clock(r?.check_out_at)} ${far(r?.check_out_distance_m)}${r?.early_leave_minutes ? `<div class="hint">left ${r.early_leave_minutes} min early</div>` : ''}</td>
+          <td class="num"><div class="tcell">${thumb(r?.check_in_selfie_url, `${e.full_name}, check in ${clock(r?.check_in_at)}`)}<div>${clock(r?.check_in_at)} ${far(r?.check_in_distance_m)}</div></div></td>
+          <td class="num"><div class="tcell">${thumb(r?.check_out_selfie_url, `${e.full_name}, check out ${clock(r?.check_out_at)}`)}<div>${clock(r?.check_out_at)} ${far(r?.check_out_distance_m)}</div></div>${r?.early_leave_minutes ? `<div class="hint">left ${r.early_leave_minutes} min early</div>` : ''}</td>
           <td class="num">${worked}</td>
           ${edit ? `<td class="right"><button class="btn btn-ghost btn-sm" data-mark="${e.id}">Mark</button></td>` : ''}</tr>`;
       }).join('');
       document.querySelectorAll('[data-mark]').forEach((b) => b.onclick = () => mark(list.find((x) => x.e.id === b.dataset.mark)));
+      document.querySelectorAll('[data-img]').forEach((b) => b.onclick = () => dialog(b.dataset.cap, `<img class="selfie-big" src="${esc(b.dataset.img)}" alt="Selfie">`, '', null));
     };
     ['fb', 'fs', 'q'].forEach((id) => document.getElementById(id).addEventListener('input', draw));
     draw();
