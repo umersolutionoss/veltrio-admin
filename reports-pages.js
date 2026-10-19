@@ -279,7 +279,7 @@ export function initReportPages(ctx) {
       <section class="panel flush"><div class="table-wrap"><table class="list">
         <thead><tr><th>Employee</th><th>Branch</th><th>Status</th><th>Check in</th><th>Check out</th><th>Worked</th>${edit ? '<th><span class="sr-only">Actions</span></th>' : ''}</tr></thead>
         <tbody id="rows"></tbody></table></div><p class="empty small" id="none" hidden>Nobody matches.</p></section>
-      <p class="note">Times are in ${esc(tz())}. A red distance means the check-in was far from the branch pin.</p>`,
+      <p class="note">Times are in ${esc(tz())}. A red distance means the check-in was far from the branch pin. Selfies are kept for ${Number(L.settings.selfie_keep_days) || 60} days, then deleted automatically (the attendance stays).</p>`,
       fmtY(day) + (isToday ? ', today' : ''));
 
     const draw = () => {

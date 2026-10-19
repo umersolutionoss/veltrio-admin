@@ -76,7 +76,8 @@ export function initAdminPages(ctx) {
   // =============================================================
   async function viewOverview() {
     page('dashboard', 'Overview', 'All companies on Veltrio.', '', loading);
-    const [c, r] = await Promise.all([sb.rpc('admin_companies'), sb.rpc('admin_revenue', { p_months: 6 })]);
+    const [c, r, cl] = await Promise.all([sb.rpc('admin_companies'), sb.rpc('admin_revenue', { p_months: 6 }),
+      sb.from('cleanup_runs').select('*').order('ran_at', { ascending: false }).limit(1)]);
     if (c.error) return page('dashboard', 'Overview', '', '', errBody(c.error));
     const list = c.data || [], rev = r.data || [];
     const live = (x) => x.status !== 'suspended' && x.end_date && daysTo(x.end_date) >= 0;
@@ -103,11 +104,30 @@ export function initAdminPages(ctx) {
           ${rev.length ? `<div class="bars" role="img" aria-label="Money received per month">${rev.map((x) => `<div class="bar"><span class="bv">${money(x.amount)}</span><span class="bf" style="height:${Math.max(4, Math.round((Number(x.amount) / maxRev) * 100))}%"></span><span class="bl">${new Intl.DateTimeFormat('en-GB', { month: 'short' }).format(new Date(x.month + 'T00:00:00'))}</span></div>`).join('')}</div>` : '<p class="hint">Approved payments show here.</p>'}
         </section>
       </div>
+      <section class="panel" id="cleanup"><div class="panel-head"><div><h2>Selfie clean-up</h2><p class="sub">Every night, selfies older than each company's limit (default 60 days) are deleted.</p></div>
+        <button class="btn btn-ghost btn-sm" type="button" id="runClean">Run now</button></div>
+        ${cl.error ? '<p class="hint">Run the Part 10 database update to turn on automatic selfie clean-up.</p>' : cl.data?.[0] ? `<p>Last run ${esc(new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }).format(new Date(cl.data[0].ran_at)))}: <b>${money(cl.data[0].files_deleted)}</b> old selfie${cl.data[0].files_deleted === 1 ? '' : 's'} deleted.</p>${cl.data[0].error ? `<p class="alert alert-error">${esc(cl.data[0].error)}</p>` : ''}` : '<p class="hint">Has not run yet. It runs every night at 2:00 AM.</p>'}
+      </section>
       <section class="panel"><h2>Latest signups</h2>
         ${list.length ? `<div class="table-wrap"><table class="list"><thead><tr><th>Company</th><th>Plan</th><th>Status</th><th>Joined</th></tr></thead><tbody>
           ${list.slice(0, 8).map((x) => `<tr><td><b>${esc(x.name)}</b><div class="hint">${esc(x.owner_email || x.email)}</div></td><td>${esc(x.plan_name || '')}</td><td>${subPill(x)}</td><td class="num">${fmtY(x.created_at)}</td></tr>`).join('')}
         </tbody></table></div><p><a href="#/companies">All companies</a></p>` : '<div class="empty"><p>No companies yet. Share your sign-up link to get the first one.</p></div>'}
       </section>`);
+    document.getElementById('runClean').onclick = (e) => runCleanup(e.currentTarget);
+  }
+
+  async function runCleanup(btn) {
+    busy(btn, true, 'Cleaning…');
+    const { data, error } = await sb.functions.invoke('daily-cleanup', { body: {} });
+    busy(btn, false);
+    if (error) {
+      let m = '';
+      try { m = (await error.context.json()).error || ''; } catch { /* no JSON body */ }
+      if (!m && (error.context?.status === 404 || /FunctionsFetchError|Failed to send/i.test(error.name + error.message))) m = 'Deploy the "daily-cleanup" function in Supabase first (see the Part 10 steps).';
+      return toast(m || error.message, 'error');
+    }
+    toast(`${money(data?.deleted)} old selfie${data?.deleted === 1 ? '' : 's'} deleted`);
+    viewOverview();
   }
 
   // =============================================================

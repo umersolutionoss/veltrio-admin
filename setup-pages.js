@@ -424,6 +424,9 @@ export function initSetupPages(ctx) {
               <div class="field"><label for="r_grace">Late after (minutes)</label><input id="r_grace" type="number" min="0" max="120" value="${settings.late_grace_minutes}"><span class="hint">Check-in this many minutes after shift start counts as late.</span></div>
             </div>
             <label class="check"><input type="checkbox" id="r_selfie" ${settings.selfie_required ? 'checked' : ''}> Selfie required at check-in and check-out</label>
+            <div class="field narrow"><label for="r_keep">Keep selfies for</label>
+              <select id="r_keep">${[30, 60, 90, 180, 365].concat([30, 60, 90, 180, 365].includes(Number(settings.selfie_keep_days ?? 60)) ? [] : [Number(settings.selfie_keep_days)]).map((d) => `<option value="${d}" ${d === Number(settings.selfie_keep_days ?? 60) ? 'selected' : ''}>${d === 365 ? '1 year' : d + ' days'}</option>`).join('')}</select>
+              <span class="hint">Older selfie photos are deleted every night to save space. The attendance record stays.</span></div>
             <label class="check"><input type="checkbox" id="r_price" ${settings.allow_price_edit ? 'checked' : ''}> Employees can change the product price in their closing</label>
             <p class="hint">When this is off, the app always uses the price set in Products.</p>
             <div class="field narrow"><label for="r_tz">Time zone</label>
@@ -533,6 +536,7 @@ export function initSetupPages(ctx) {
         default_geofence_radius_m: Number(rf.querySelector('#r_radius').value),
         late_grace_minutes: Number(rf.querySelector('#r_grace').value),
         selfie_required: rf.querySelector('#r_selfie').checked,
+        ...('selfie_keep_days' in settings ? { selfie_keep_days: Number(rf.querySelector('#r_keep').value) } : {}),
         allow_price_edit: rf.querySelector('#r_price').checked,
         timezone: rf.querySelector('#r_tz').value,
       };
