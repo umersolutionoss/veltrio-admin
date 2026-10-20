@@ -134,12 +134,28 @@ async function loadProfile() {
   state.company = null; state.sub = null;
   if (data && data.company_id) {
     const [c, s] = await Promise.all([
-      sb.from('companies').select('id, name, email, status').eq('id', data.company_id).maybeSingle(),
+      sb.from('companies').select('*').eq('id', data.company_id).maybeSingle(),
       sb.from('subscriptions').select('plan_id, status, end_date, billing_cycle, plans(name, max_branches, max_employees)')
         .eq('company_id', data.company_id).order('end_date', { ascending: false }).limit(1).maybeSingle(),
     ]);
     state.company = c.data || null;
     state.sub = s.data || null;
+    // limits that apply today: employees paid for, or a limit set by Veltrio
+    if (state.sub?.plans) {
+      const lim = await sb.rpc('my_limits');
+      const l = lim.data?.[0];
+      if (!lim.error && l) {
+        state.sub.plans = { ...state.sub.plans, custom: l.is_custom, max_branches: l.max_branches, max_employees: l.max_employees,
+          next_employees: l.next_employees, next_start: l.next_start };
+      } else {
+        const co = state.company;
+        if (co && (co.custom_max_branches != null || co.custom_max_employees != null)) {
+          state.sub.plans = { ...state.sub.plans, custom: true,
+            max_branches: co.custom_max_branches ?? state.sub.plans.max_branches,
+            max_employees: co.custom_max_employees ?? state.sub.plans.max_employees };
+        }
+      }
+    }
     await reloadPerms();
     const me = await sb.from('employees').select('id').eq('user_id', uid).maybeSingle();
     state.employeeId = me.data?.id || null;
@@ -527,8 +543,8 @@ async function viewCompanyDashboard() {
     <section class="stats" aria-label="Today at a glance">
       <div class="stat"><div class="label">Checked in today</div><div class="value">${d.checkedIn}<small> / ${d.employees}</small></div><div class="foot">active employees</div></div>
       <div class="stat"><div class="label">Today's sales closing</div><div class="value">${money(d.closingTotal)}</div><div class="foot">${d.closingCount} closing${d.closingCount === 1 ? '' : 's'} submitted</div></div>
-      <div class="stat"><div class="label">Branches</div><div class="value">${d.branches}${lim(plan.max_branches)}</div><div class="foot">${plan.max_branches ? 'allowed on your plan' : 'active'}</div></div>
-      <div class="stat"><div class="label">Employees</div><div class="value">${d.employees}${lim(plan.max_employees)}</div><div class="foot">${plan.max_employees ? 'allowed on your plan' : 'active'}</div></div>
+      <div class="stat"><div class="label">Branches</div><div class="value">${d.branches}${lim(plan.max_branches)}</div><div class="foot">${plan.max_branches ? (plan.custom ? 'allowed for your account' : 'allowed now') : 'active'}</div></div>
+      <div class="stat"><div class="label">Employees</div><div class="value">${d.employees}${lim(plan.max_employees)}</div><div class="foot">${plan.max_employees ? (plan.custom ? 'allowed for your account' : 'allowed now') : 'active'}</div></div>
     </section>
     ${doneAll ? '' : `
     <section class="panel">

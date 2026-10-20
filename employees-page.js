@@ -123,10 +123,10 @@ export function initEmployeesPage(ctx) {
 
     const active = emps.filter((x) => x.status === 'active').length;
     const max = state.sub?.plans?.max_employees;
-    const usage = max ? `${active} of ${max} active employees on your ${esc(state.sub.plans.name)} plan.` : `${active} active employees.`;
+    const usage = max ? `${active} of ${max} active employees allowed now${state.sub.plans.next_employees ? ` (${state.sub.plans.next_employees} from ${new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short' }).format(new Date(state.sub.plans.next_start + 'T00:00:00'))})` : ''}.` : `${active} active employees.`;
     const full = max && active >= max;
     const addBtn = !canManage() ? '' : full
-      ? '<span class="hint">Employee limit reached. Upgrade your plan to add more.</span>'
+      ? `<span class="hint">Employee limit reached. ${state.profile.role === 'company_admin' ? '<a href="#/settings?pay=1">Pay for more employees</a>' : 'Ask your company admin to pay for more employees'}.</span>`
       : '<a class="btn" href="#/employees?edit=new">Add employee</a>';
     const bName = (id) => look.branches.find((b) => b.id === id)?.name || '';
     const dName = (id) => look.designations.find((d) => d.id === id)?.name || '';

@@ -423,3 +423,7 @@ input[type=file] { font-size: 14px; }
 .maincol { min-width: 0; }
 .maincol > .banner { margin: 20px 32px 0; }
 @media (max-width: 860px) { .maincol > .banner { margin: 14px 16px 0; } }
+
+/* Part 12: per-employee price */
+.calc { margin: 4px 0 12px; padding: 10px 12px; border-radius: 10px; background: var(--gold-soft, #fdf3dc); color: var(--ink, #10282a); font-size: 14px; }
+.calc:empty { display: none; }

@@ -157,7 +157,7 @@ export function initAdminPages(ctx) {
         <td>${subPill(x)}${Number(x.pending_payments) ? '<div class="hint"><a href="#/payments">Payment waiting</a></div>' : ''}</td>
         <td class="num">${fmtY(x.end_date)}${x.end_date ? `<div class="hint">${daysTo(x.end_date) >= 0 ? `${daysTo(x.end_date)} days left` : `${-daysTo(x.end_date)} days ago`}</div>` : ''}</td>
         <td class="num r">${x.branches}${x.max_branches ? ` / ${x.max_branches}` : ''}</td>
-        <td class="num r">${x.employees}${x.max_employees ? ` / ${x.max_employees}` : ''}</td>
+        <td class="num r">${x.employees}${x.max_employees ? ` / ${x.max_employees}` : ''}${x.custom_max_employees != null || x.custom_max_branches != null ? '<div class="hint">custom limit</div>' : x.next_employees ? `<div class="hint">${x.next_employees} from ${fmtY(x.next_start)}</div>` : ''}</td>
         <td class="num">${x.last_activity ? fmtY(x.last_activity) : '<span class="hint">Never</span>'}</td>
         <td class="num r">${money(x.paid_total)}</td>
         <td class="right"><button class="btn btn-ghost btn-sm" data-c="${x.id}">Manage</button></td></tr>`).join('');
@@ -166,6 +166,7 @@ export function initAdminPages(ctx) {
     ['q', 'fs'].forEach((id) => document.getElementById(id).addEventListener('input', draw));
     draw();
 
+    const planLim = (pid, k) => { const p = plans.find((y) => y.id === pid); return p ? (p[k] ?? 'unlimited') : '-'; };
     function manage(x) {
       const end = x.end_date || today();
       const f = dialog(x.name, `
@@ -181,15 +182,28 @@ export function initAdminPages(ctx) {
         </div>
         <p class="quick"><span class="hint">Add:</span> <button type="button" class="btn btn-ghost btn-sm" data-add="7">7 days</button> <button type="button" class="btn btn-ghost btn-sm" data-add="30">1 month</button> <button type="button" class="btn btn-ghost btn-sm" data-add="365">1 year</button></p>
         <p class="hint">Use this for cash payments, discounts or a longer trial. Online payments are approved on the Payments page.</p>
+        <h3 class="mini">Limits for this company</h3>
+        <div class="row-2">
+          <div class="field"><label for="d_lb">Branches</label><input id="d_lb" type="number" min="1" inputmode="numeric" value="${x.custom_max_branches ?? ''}" placeholder="Plan: ${esc(planLim(x.plan_id, 'max_branches'))}"></div>
+          <div class="field"><label for="d_le">Employees</label><input id="d_le" type="number" min="1" inputmode="numeric" value="${x.custom_max_employees ?? ''}" placeholder="Auto"></div>
+        </div>
+        <p class="hint">Now using ${x.branches} branch${Number(x.branches) === 1 ? '' : 'es'} and ${x.employees} active employee${Number(x.employees) === 1 ? '' : 's'}. Leave empty and the limit comes by itself from the employees the company paid for (or the plan). A number here wins over that.</p>
         <h3 class="mini">Access</h3>
         <p>${x.status === 'suspended' ? 'This company is <b>suspended</b>. Its staff cannot use the app.' : 'This company can use Veltrio.'}
           <button type="button" class="btn btn-ghost btn-sm ${x.status === 'suspended' ? '' : 'danger'}" id="d_susp">${x.status === 'suspended' ? 'Activate company' : 'Suspend company'}</button></p>`,
-      'Save plan', async (form) => {
+      'Save', async (form) => {
         const v = { p_company: x.id, p_plan: form.querySelector('#d_plan').value, p_end: form.querySelector('#d_end').value, p_cycle: form.querySelector('#d_cycle').value, p_status: form.querySelector('#d_st').value };
         if (!v.p_end) { alertIn(form, 'Choose the date.'); return false; }
+        const lim = (id) => { const t = form.querySelector(id).value.trim(); return t === '' ? null : Math.floor(Number(t)); };
+        const lb = lim('#d_lb'), le = lim('#d_le');
+        if ((lb !== null && !(lb >= 1)) || (le !== null && !(le >= 1))) { alertIn(form, 'Limits must be 1 or more, or empty.'); return false; }
         const { error } = await sb.rpc('admin_set_subscription', v);
         if (error) throw error;
-        toast('Plan saved'); viewCompanies();
+        if (lb !== (x.custom_max_branches ?? null) || le !== (x.custom_max_employees ?? null)) {
+          const r = await sb.rpc('admin_set_limits', { p_company: x.id, p_max_branches: lb, p_max_employees: le });
+          if (r.error) throw r.error;
+        }
+        toast('Saved'); viewCompanies();
       }, true);
       f.querySelectorAll('[data-add]').forEach((b) => b.onclick = () => {
         const base = f.querySelector('#d_end').value || today();
@@ -233,7 +247,7 @@ export function initAdminPages(ctx) {
       document.getElementById('none').hidden = shown.length > 0;
       document.getElementById('rows').innerHTML = shown.map((x) => `<tr>
         <td><b>${esc(co(x.company_id).name || '')}</b> <span class="code">${esc(co(x.company_id).login_code || '')}</span></td>
-        <td>${esc(plan(x.plan_id))}${x.billing_cycle ? `<div class="hint">${x.billing_cycle === 'yearly' ? '1 year' : '1 month'}</div>` : ''}</td>
+        <td>${esc(plan(x.plan_id))}${x.billing_cycle ? `<div class="hint">${x.billing_cycle === 'yearly' ? '1 year' : '1 month'}${x.employees ? `, ${x.employees} employees` : ''}</div>` : ''}</td>
         <td class="num r"><b>${money(x.amount)}</b></td><td>${METHOD[x.method] || x.method}</td><td>${esc(x.reference_no || '')}</td>
         <td class="num">${fmtY(x.paid_at || x.created_at)}</td>
         <td><span class="pill ${x.status === 'approved' ? 'pill-active' : x.status === 'rejected' ? 'pill-expired' : 'pill-trial'}">${x.status === 'pending' ? 'Waiting' : x.status === 'approved' ? 'Approved' : 'Rejected'}</span>${x.review_note ? `<div class="hint">${esc(x.review_note)}</div>` : ''}</td>
@@ -248,10 +262,11 @@ export function initAdminPages(ctx) {
       const isPdf = /\.pdf$/i.test(x.proof_url || '');
       const pending = x.status === 'pending';
       const f = dialog(`${co(x.company_id).name || ''}: Rs ${money(x.amount)}`, `
-        <dl class="facts two"><div><dt>Paying for</dt><dd>${esc(plan(x.plan_id))}, ${x.billing_cycle === 'yearly' ? '1 year' : '1 month'}</dd></div>
+        <dl class="facts two"><div><dt>Paying for</dt><dd>${esc(plan(x.plan_id))}, ${x.billing_cycle === 'yearly' ? '1 year' : '1 month'}${x.employees ? `, <b>${x.employees} employees</b>` : ''}</dd></div>
+          ${x.expected_amount != null ? `<div><dt>Price</dt><dd>Rs ${money(x.expected_amount)}${Number(x.expected_amount) !== Number(x.amount) ? ` <span class="pill pill-expired">Paid Rs ${money(x.amount)}</span>` : ' <span class="pill pill-active">Matches</span>'}</dd></div>` : ''}
           <div><dt>Method</dt><dd>${METHOD[x.method] || x.method}</dd></div><div><dt>Reference</dt><dd>${esc(x.reference_no || '–')}</dd></div><div><dt>Paid on</dt><dd>${fmtY(x.paid_at || x.created_at)}</dd></div></dl>
         ${url ? (isPdf ? `<p><a href="${esc(url)}" target="_blank" rel="noopener">Open the receipt (PDF)</a></p>` : `<a href="${esc(url)}" target="_blank" rel="noopener"><img class="proof" src="${esc(url)}" alt="Payment screenshot"></a>`) : '<p class="hint">No screenshot attached.</p>'}
-        ${pending ? `<p class="hint">Check that the money reached your account before approving. Approving adds ${x.billing_cycle === 'yearly' ? '1 year' : '1 month'} after the current end date.</p>
+        ${pending ? `<p class="hint">Check that the money reached your account before approving. Approving adds ${x.billing_cycle === 'yearly' ? '1 year' : '1 month'} after the current end date${x.employees ? `, for ${x.employees} employees` : ''}.</p>
           <div class="field"><label for="d_note">Note to the company <span class="opt">needed when rejecting</span></label><input id="d_note" placeholder="Amount not received"></div>
           <p><button type="button" class="btn btn-ghost danger" id="d_rej">Reject</button></p>` : `${x.review_note ? `<p>Note: ${esc(x.review_note)}</p>` : ''}`}`,
         pending ? 'Approve payment' : '', async (form) => {
@@ -279,12 +294,12 @@ export function initAdminPages(ctx) {
     const plans = p.data || [], ps = s.data || {};
     page('plans', 'Plans', 'Prices and limits companies see when they sign up and pay.', '<button class="btn" type="button" id="addPlan">Add plan</button>', `
       <section class="panel flush"><div class="table-wrap"><table class="list">
-        <thead><tr><th>Plan</th><th class="r">Monthly (Rs)</th><th class="r">Yearly (Rs)</th><th class="r">Branches</th><th class="r">Employees</th><th class="r">Trial days</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr></thead>
-        <tbody>${plans.map((x) => `<tr class="${x.is_active ? '' : 'muted-row'}"><td><b>${esc(x.name)}</b></td><td class="num r">${money(x.price_monthly)}</td><td class="num r">${money(x.price_yearly)}</td>
+        <thead><tr><th>Plan</th><th class="r">Per employee / month</th><th class="r">Per employee / year</th><th class="r">Fixed / month</th><th class="r">Fixed / year</th><th class="r">Branches</th><th class="r">Employees</th><th class="r">Trial days</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr></thead>
+        <tbody>${plans.map((x) => `<tr class="${x.is_active ? '' : 'muted-row'}"><td><b>${esc(x.name)}</b></td><td class="num r">${money(x.price_per_employee_monthly)}</td><td class="num r">${money(x.price_per_employee_yearly)}</td><td class="num r">${money(x.price_monthly)}</td><td class="num r">${money(x.price_yearly)}</td>
           <td class="num r">${x.max_branches ?? 'Unlimited'}</td><td class="num r">${x.max_employees ?? 'Unlimited'}</td><td class="num r">${x.trial_days}</td>
           <td>${x.is_active ? '<span class="pill pill-active">On sale</span>' : '<span class="pill pill-expired">Hidden</span>'}</td>
           <td class="right"><button class="btn btn-ghost btn-sm" data-plan="${x.id}">Edit</button></td></tr>`).join('')}</tbody></table></div></section>
-      ${plans.some((x) => !Number(x.price_monthly)) ? '<p class="note">Some plans have no price yet. Set the prices before companies start paying.</p>' : ''}
+      ${plans.some((x) => !Number(x.price_monthly) && !Number(x.price_per_employee_monthly)) ? '<p class="note">Some plans have no price yet. Set the prices before companies start paying.</p>' : ''}
       <section class="panel"><h2>How companies pay you</h2><p class="sub">Shown to companies on their Settings page when they pay or renew.</p>
         <form id="pf" novalidate>
           <div class="field"><label for="p_bank">Bank account</label><textarea id="p_bank" rows="3" placeholder="Meezan Bank&#10;Account title: Umer Ashraf&#10;IBAN: PK00 MEZN ...">${esc(ps.bank_details)}</textarea></div>
@@ -300,10 +315,14 @@ export function initAdminPages(ctx) {
       const isNew = !x; x = x || { price_monthly: 0, price_yearly: 0, trial_days: 14, is_active: true, max_branches: 5, max_employees: 50 };
       const f = dialog(isNew ? 'Add plan' : `Edit ${x.name}`, `
         <div class="field"><label for="d_name">Name</label><input id="d_name" value="${esc(x.name)}"></div>
-        <div class="row-2"><div class="field"><label for="d_m">Monthly price (Rs)</label><input id="d_m" type="number" min="0" step="100" value="${Number(x.price_monthly)}"></div>
-          <div class="field"><label for="d_y">Yearly price (Rs)</label><input id="d_y" type="number" min="0" step="100" value="${Number(x.price_yearly)}"><span class="hint" id="d_save"></span></div></div>
+        <h3 class="mini">Price per employee</h3>
+        <div class="row-2"><div class="field"><label for="d_em">Per employee, 1 month (Rs)</label><input id="d_em" type="number" min="0" step="10" value="${Number(x.price_per_employee_monthly || 0)}"></div>
+          <div class="field"><label for="d_ey">Per employee, 1 year (Rs)</label><input id="d_ey" type="number" min="0" step="10" value="${Number(x.price_per_employee_yearly || 0)}"><span class="hint" id="d_save2"></span></div></div>
+        <h3 class="mini">Fixed price <span class="opt">optional, added on top</span></h3>
+        <div class="row-2"><div class="field"><label for="d_m">Fixed, 1 month (Rs)</label><input id="d_m" type="number" min="0" step="100" value="${Number(x.price_monthly)}"></div>
+          <div class="field"><label for="d_y">Fixed, 1 year (Rs)</label><input id="d_y" type="number" min="0" step="100" value="${Number(x.price_yearly)}"><span class="hint" id="d_save"></span></div></div>
         <div class="row-2"><div class="field"><label for="d_b">Branches</label><input id="d_b" type="number" min="1" value="${x.max_branches ?? ''}" placeholder="Unlimited"></div>
-          <div class="field"><label for="d_e">Employees</label><input id="d_e" type="number" min="1" value="${x.max_employees ?? ''}" placeholder="Unlimited"></div></div>
+          <div class="field"><label for="d_e">Max employees</label><input id="d_e" type="number" min="1" value="${x.max_employees ?? ''}" placeholder="Unlimited"></div></div>
         <span class="hint">Leave empty for unlimited.</span>
         <div class="field" style="margin-top:12px"><label for="d_t">Free trial days</label><input id="d_t" type="number" min="0" max="90" value="${x.trial_days}"></div>
         <label class="check"><input type="checkbox" id="d_on" ${x.is_active ? 'checked' : ''}> On sale (shown at sign-up)</label>
@@ -311,15 +330,18 @@ export function initAdminPages(ctx) {
         isNew ? 'Add plan' : 'Save plan', async (form) => {
           const n = (id) => (form.querySelector(id).value === '' ? null : Number(form.querySelector(id).value));
           const v = { name: form.querySelector('#d_name').value.trim(), price_monthly: n('#d_m') ?? 0, price_yearly: n('#d_y') ?? 0,
+            price_per_employee_monthly: n('#d_em') ?? 0, price_per_employee_yearly: n('#d_ey') ?? 0,
             max_branches: n('#d_b'), max_employees: n('#d_e'), trial_days: n('#d_t') ?? 0, is_active: form.querySelector('#d_on').checked };
           if (!v.name) { alertIn(form, 'Enter the plan name.'); return false; }
-          if (v.price_monthly < 0 || v.price_yearly < 0) { alertIn(form, 'Prices cannot be negative.'); return false; }
+          if (v.price_monthly < 0 || v.price_yearly < 0 || v.price_per_employee_monthly < 0 || v.price_per_employee_yearly < 0) { alertIn(form, 'Prices cannot be negative.'); return false; }
           const r = isNew ? await sb.from('plans').insert(v) : await sb.from('plans').update(v).eq('id', x.id);
           if (r.error) throw r.error;
           toast('Plan saved'); viewPlans();
         });
       const sync = () => { const m = Number(f.querySelector('#d_m').value), y = Number(f.querySelector('#d_y').value); f.querySelector('#d_save').textContent = m && y && y < m * 12 ? `Saves ${Math.round(100 - (y / (m * 12)) * 100)}% against monthly` : ''; };
+      const sync2 = () => { const m = Number(f.querySelector('#d_em').value), y = Number(f.querySelector('#d_ey').value); f.querySelector('#d_save2').textContent = m && y && y < m * 12 ? `Saves ${Math.round(100 - (y / (m * 12)) * 100)}% against monthly` : ''; };
       f.querySelector('#d_m').oninput = sync; f.querySelector('#d_y').oninput = sync; sync();
+      f.querySelector('#d_em').oninput = sync2; f.querySelector('#d_ey').oninput = sync2; sync2();
     };
     document.getElementById('addPlan').onclick = () => openPlan(null);
     document.querySelectorAll('[data-plan]').forEach((b) => b.onclick = () => openPlan(plans.find((x) => x.id === b.dataset.plan)));
@@ -350,6 +372,7 @@ export function initAdminPages(ctx) {
     if (pl.error || py.error) return `<section class="panel" id="s-plan"><h2>Plan</h2>${errBody(pl.error || py.error)}</section>`;
     const plans = pl.data || [], pays = py.data || [], how = ps.data || {};
     const sub = state.sub, cur = sub?.plans;
+    const activeEmps = (await sb.from('employees').select('id', { count: 'exact', head: true }).eq('company_id', cid).eq('status', 'active')).count || 0;
     const left = sub ? daysTo(sub.end_date) : null;
     const pending = pays.find((x) => x.status === 'pending');
     const admin = state.profile.role === 'company_admin';
@@ -361,7 +384,8 @@ export function initAdminPages(ctx) {
           <div><dt>Current plan</dt><dd>${esc(cur?.name || '')}</dd></div>
           <div><dt>Status</dt><dd>${status}</dd></div>
           <div><dt>${left < 0 ? 'Ended on' : 'Until'}</dt><dd>${sub ? fmtY(sub.end_date) : ''}${left >= 0 ? ` <span class="hint">(${left} days)</span>` : ''}</dd></div>
-          <div><dt>Limits</dt><dd>${cur?.max_branches ? `${cur.max_branches} branches, ${cur.max_employees} employees` : 'Unlimited'}</dd></div>
+          <div><dt>Allowed now</dt><dd>${cur?.max_employees ?? 'Unlimited'} employees, ${cur?.max_branches ?? 'unlimited'} branch${cur?.max_branches === 1 ? '' : 'es'}${cur?.custom ? ' <span class="hint">(set by Veltrio)</span>' : ''}</dd></div>
+          ${cur?.next_employees ? `<div><dt>From ${fmtY(cur.next_start)}</dt><dd>${cur.next_employees} employees (paid)</dd></div>` : ''}
         </dl>
         ${!admin ? '<p class="note">Only the company admin can pay or change the plan.</p>' : pending ? `<p class="alert alert-info">Your payment of Rs ${money(pending.amount)} sent on ${fmtY(pending.paid_at || pending.created_at)} is waiting for Veltrio to check it. Your plan is extended once it is approved.</p>` : `
         <div class="pay-how">
@@ -374,9 +398,12 @@ export function initAdminPages(ctx) {
         <form id="payf" novalidate>
           <h3 class="mini">I have paid</h3>
           <div class="row-2">
-            <div class="field"><label for="y_plan">Plan</label><select id="y_plan">${plans.map((p) => `<option value="${p.id}" data-m="${p.price_monthly}" data-y="${p.price_yearly}" ${p.id === sub?.plan_id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
+            <div class="field"><label for="y_plan">Plan</label><select id="y_plan">${plans.map((p) => `<option value="${p.id}" data-m="${p.price_monthly}" data-y="${p.price_yearly}" data-em="${p.price_per_employee_monthly || 0}" data-ey="${p.price_per_employee_yearly || 0}" data-max="${p.max_employees ?? ''}" ${p.id === sub?.plan_id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
             <div class="field"><label for="y_cycle">For</label><select id="y_cycle"><option value="monthly">1 month</option><option value="yearly">1 year</option></select></div>
           </div>
+          <div class="field narrow" id="y_emp_f"><label for="y_emp">Number of employees</label><input id="y_emp" type="number" min="${Math.max(1, activeEmps)}" step="1" inputmode="numeric" value="${Math.max(1, activeEmps, cur?.next_employees || 0, !cur?.custom && sub?.billing_cycle !== 'trial' ? cur?.max_employees || 0 : 0)}">
+            <span class="hint">You have ${activeEmps} active employee${activeEmps === 1 ? '' : 's'} now. The new number applies from your next period${sub && left >= 0 ? ` (${fmtY(sub.end_date)})` : ''}.</span></div>
+          <p class="calc" id="y_calc" aria-live="polite"></p>
           <div class="row-2">
             <div class="field"><label for="y_amt">Amount paid (Rs)</label><input id="y_amt" type="number" min="1" step="1"></div>
             <div class="field"><label for="y_m">Paid by</label><select id="y_m">${Object.entries(METHOD).filter(([k]) => k !== 'card').map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></div>
@@ -397,14 +424,31 @@ export function initAdminPages(ctx) {
   function bindBilling(reload) {
     const f = document.getElementById('payf');
     if (!f) return;
-    const amt = f.querySelector('#y_amt');
-    const fill = () => { const o = f.querySelector('#y_plan').selectedOptions[0]; const v = Number(f.querySelector('#y_cycle').value === 'yearly' ? o.dataset.y : o.dataset.m); if (v) amt.value = v; };
-    f.querySelector('#y_plan').onchange = fill; f.querySelector('#y_cycle').onchange = fill; fill();
+    const amt = f.querySelector('#y_amt'), emp = f.querySelector('#y_emp');
+    const perEmp = () => { const o = f.querySelector('#y_plan').selectedOptions[0]; return Number(o.dataset.em) > 0 || Number(o.dataset.ey) > 0; };
+    const fill = () => {
+      const o = f.querySelector('#y_plan').selectedOptions[0], yearly = f.querySelector('#y_cycle').value === 'yearly';
+      const fixed = Number(yearly ? o.dataset.y : o.dataset.m), rate = Number(yearly ? o.dataset.ey : o.dataset.em), n = Math.floor(Number(emp.value) || 0);
+      f.querySelector('#y_emp_f').hidden = !perEmp();
+      const total = fixed + (perEmp() ? rate * n : 0);
+      const parts = [];
+      if (perEmp()) parts.push(`${n} employee${n === 1 ? '' : 's'} × Rs ${money(rate)}`);
+      if (fixed) parts.push(`Rs ${money(fixed)} fixed`);
+      f.querySelector('#y_calc').innerHTML = total ? `${parts.join(' + ')} for ${yearly ? '1 year' : '1 month'} = <b>Rs ${money(total)}</b>` : '';
+      if (total) amt.value = total;
+    };
+    ['#y_plan', '#y_cycle'].forEach((id) => f.querySelector(id).onchange = fill); emp.oninput = fill; fill();
     f.onsubmit = async (e) => {
       e.preventDefault();
       const cid = state.profile.company_id;
       const v = { plan_id: f.querySelector('#y_plan').value, billing_cycle: f.querySelector('#y_cycle').value, amount: Number(amt.value),
         method: f.querySelector('#y_m').value, reference_no: f.querySelector('#y_ref').value.trim() || null, paid_at: f.querySelector('#y_on').value || null };
+      if (perEmp()) {
+        v.employees = Math.floor(Number(emp.value));
+        const min = Number(emp.min) || 1, max = Number(f.querySelector('#y_plan').selectedOptions[0].dataset.max) || Infinity;
+        if (!(v.employees >= min)) return alertIn(f, `You have ${min} active employee${min === 1 ? '' : 's'}. Pay for at least ${min}, or make some employees inactive first.`);
+        if (v.employees > max) return alertIn(f, `This plan allows up to ${max} employees. Choose a bigger plan.`);
+      }
       if (!(v.amount > 0)) return alertIn(f, 'Enter the amount you paid.');
       if (!v.reference_no && !f.querySelector('#y_proof').files[0]) return alertIn(f, 'Add the transaction ID or a screenshot, so Veltrio can find your payment.');
       const btn = f.querySelector('button[type=submit]'); busy(btn, true, 'Sending…');

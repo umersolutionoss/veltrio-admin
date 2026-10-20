@@ -143,10 +143,10 @@ export function initSetupPages(ctx) {
     const active = branches.filter((b) => b.is_active).length;
     const max = state.sub?.plans?.max_branches;
     const planName = state.sub?.plans?.name;
-    const usage = max ? `${active} of ${max} branches used on your ${esc(planName)} plan.` : `${active} active branch${active === 1 ? '' : 'es'}.`;
+    const usage = max ? `${active} of ${max} branches used${state.sub.plans.custom ? ' (limit set for your account)' : ` on your ${esc(planName)} plan`}.` : `${active} active branch${active === 1 ? '' : 'es'}.`;
     const full = max && active >= max;
     const addBtn = canManage()
-      ? (full ? `<span class="hint">Branch limit reached. Upgrade your plan to add more.</span>`
+      ? (full ? `<span class="hint">Branch limit reached. Contact Veltrio or upgrade your plan to add more.</span>`
               : `<a class="btn" href="#/branches?edit=new">Add branch</a>`)
       : '';
     const empName = (id) => employees.find((x) => x.id === id)?.full_name || '';
